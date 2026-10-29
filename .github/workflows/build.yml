@@ -13,22 +13,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cpp
+        with:
+          path: |
+            godot-cpp
+            .sconsign.dblite
+          key: godotcpp-4.3-android-arm64-debug-v1
       - name: Get godot-cpp
+        if: steps.cpp.outputs.cache-hit != 'true'
         run: git clone --depth 1 --branch 4.3 https://github.com/godotengine/godot-cpp.git
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install scons
-      - uses: nttld/setup-ndk@v1
-        id: ndk
-        with:
-          ndk-version: r23c
-      - name: Build C++ library (arm64)
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+      - name: Link NDK
         run: |
-          scons platform=android arch=arm64 target=template_release -j4
-          scons platform=android arch=arm64 target=template_debug -j4
+          sudo mkdir -p $ANDROID_HOME/ndk
+          sudo ln -sfn $ANDROID_NDK_LATEST_HOME $ANDROID_HOME/ndk/23.2.8568313
+      - name: Build C++ library (arm64)
+        run: |
+          scons platform=android arch=arm64 target=template_debug -j$(nproc)
           ls -la bin
       - uses: actions/upload-artifact@v4
         with:
