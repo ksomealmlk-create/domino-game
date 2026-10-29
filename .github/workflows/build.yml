@@ -1,0 +1,75 @@
+name: Build APK (Godot + C++)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+env:
+  GODOT_VERSION: "4.3"
+
+jobs:
+  build-lib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get godot-cpp
+        run: git clone --depth 1 --branch 4.3 https://github.com/godotengine/godot-cpp.git
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install scons
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r23c
+      - name: Build C++ library (arm64)
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          scons platform=android arch=arm64 target=template_release -j4
+          scons platform=android arch=arm64 target=template_debug -j4
+          ls -la bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libs
+          path: bin/*.so
+
+  export:
+    needs: build-lib
+    runs-on: ubuntu-latest
+    container: barichello/godot-ci:4.3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: libs
+          path: bin
+      - name: Setup templates
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable || true
+      - name: Android settings
+        run: |
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          mkdir -p ~/.config/godot
+          JAVA_DIR=$(dirname $(dirname $(readlink -f $(which javac))))
+          SDK=${ANDROID_SDK_ROOT:-/usr/lib/android-sdk}
+          {
+            echo '[gd_resource type="EditorSettings" format=3]'
+            echo '[resource]'
+            echo "export/android/android_sdk_path = \"$SDK\""
+            echo "export/android/java_sdk_path = \"$JAVA_DIR\""
+            echo "export/android/debug_keystore = \"$PWD/debug.keystore\""
+            echo 'export/android/debug_keystore_user = "androiddebugkey"'
+            echo 'export/android/debug_keystore_pass = "android"'
+          } > ~/.config/godot/editor_settings-4.3.tres
+      - name: Export APK
+        run: |
+          mkdir -p build
+          godot --headless --import || true
+          godot --headless --export-debug "Android" build/domino.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: domino-apk
+          path: build/domino.apk
