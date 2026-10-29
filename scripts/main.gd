@@ -2,6 +2,8 @@ extends Control
 
 const TileView = preload("res://scripts/tile_view.gd")
 const TARGET := 100
+const BackendRef = preload("res://scripts/backend.gd")
+var _note := ""
 
 var engine
 var hand_box: HBoxContainer
@@ -20,8 +22,11 @@ var match_over := false
 
 func _ready() -> void:
 	layout_direction = Control.LAYOUT_DIRECTION_LTR
-	engine = ClassDB.instantiate("DominoEngine")
+	var mk = BackendRef.make()
+	engine = mk[0]
+	_note = mk[1]
 	_build_ui()
+	BackendRef.add_note(self, _note)
 	if engine == null:
 		status_lbl.text = "خطأ: مكتبة اللعبة (C++) لم تُحمَّل"
 		return
