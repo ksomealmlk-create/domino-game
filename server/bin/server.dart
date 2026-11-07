@@ -407,6 +407,7 @@ class Admin {
   static bool maint = false;
   static String maintMsg = 'اللعبة تحت الصيانة حالياً، ارجع بعد شوي';
   static String welcome = '';
+  static String invOk = 'تم إبلاغ اللاعبين ✅ انتظرهم بالغرفة';
   static Set<String> bans = {};
   static final HttpClient _http = HttpClient()..connectionTimeout = const Duration(seconds: 8);
 
@@ -458,7 +459,7 @@ class Admin {
     if (j == null) {
       c.send({'t': 'note', 'm': 'تعذر إبلاغ اللاعبين، جرّب بعد شوي'});
     } else if (j['ok'] == true) {
-      c.send({'t': 'note', 'm': 'تم إبلاغ اللاعبين ✅ انتظرهم بالغرفة'});
+      c.send({'t': 'note', 'm': invOk});
     } else if (j['error'] == 'wait') {
       c.send({'t': 'note', 'm': 'انتظر ${j['wait']} ثانية قبل ما تبلّغ مرة ثانية'});
     } else if (j['error'] == 'off') {
@@ -516,6 +517,8 @@ class Admin {
     maint = cfg['maint'] == true;
     maintMsg = (cfg['maintMsg'] ?? maintMsg).toString();
     welcome = (cfg['welcome'] ?? '').toString();
+    final ok = (cfg['invOk'] ?? '').toString().trim();
+    if (ok.isNotEmpty) invOk = ok;
     bans = {for (final x in (cfg['bans'] as List? ?? const [])) x.toString()};
     for (final c in clients.toList()) {
       if (bans.contains(c.did)) {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../core/settings.dart';
 import '../net/online.dart';
+import '../net/presence.dart';
 import '../push/push.dart';
 import 'game_page.dart';
 import 'theme.dart';
@@ -98,7 +99,7 @@ class _OnlinePageState extends State<OnlinePage> {
           contentPadding: EdgeInsets.zero,
           dense: true,
           activeColor: kGold,
-          title: const Text('📣 إبلاغ العرف الأصليون لما أنشئ غرفة', style: TextStyle(fontWeight: FontWeight.w700)),
+          title: Text(Presence.t('invToggle', '📣 إبلاغ العرف الأصليون لما أنشئ غرفة'), style: const TextStyle(fontWeight: FontWeight.w700)),
           subtitle: const Text('يوصل إشعار لكل اللاعبين وينقلهم مباشرة لغرفتك', style: TextStyle(color: Colors.white54, fontSize: 12)),
           value: st.inviteOnCreate,
           onChanged: (v) => setState(() => st.update(() => st.inviteOnCreate = v)),
@@ -163,7 +164,7 @@ class _OnlinePageState extends State<OnlinePage> {
           ),
         ),
         const SizedBox(height: 16),
-        if (l.host && !l.quick) GoldButton('إبلاغ العرف الأصليون', ghost: true, icon: Icons.campaign_rounded, onTap: ctrl.invite),
+        if (l.host && !l.quick) GoldButton(Presence.t('invBtn', 'إبلاغ العرف الأصليون'), ghost: true, icon: Icons.campaign_rounded, onTap: ctrl.invite),
         if (l.host && !l.quick) const SizedBox(height: 10),
         if (l.host && !l.quick) GoldButton('ابدأ الآن (البقية بوتات)', icon: Icons.play_arrow_rounded, onTap: ctrl.startNow),
         const SizedBox(height: 10),

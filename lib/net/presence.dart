@@ -15,15 +15,30 @@ class Presence with WidgetsBindingObserver {
   /// رصيد الفلوس (من الإدارة). يتحدّث مع كل نبضة.
   static final ValueNotifier<int> coins = ValueNotifier<int>(0);
 
+  /// نصوص من الإدارة (اسم زر الإبلاغ...). تنحفظ بالجهاز حتى تبقى بدون إنترنت.
+  static Map<String, String> _txt = {};
+  static String t(String key, String def) {
+    final v = _txt[key];
+    return (v == null || v.trim().isEmpty) ? def : v;
+  }
+
   Settings? _st;
   Timer? _tm;
   DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
 
   static void start(Settings st) {
     i._st = st;
+    i._loadTxt();
     WidgetsBinding.instance.addObserver(i);
     i._beat(false);
     i._timer();
+  }
+
+  Future<void> _loadTxt() async {
+    try {
+      final raw = (await SharedPreferences.getInstance()).getString('adminTxt');
+      if (raw != null) _txt = Map<String, String>.from((jsonDecode(raw) as Map).map((k, v) => MapEntry(k.toString(), v.toString())));
+    } catch (_) {}
   }
 
   void _timer() {
@@ -56,14 +71,21 @@ class Presence with WidgetsBindingObserver {
       final txt = await rs.transform(utf8.decoder).join();
       hc.close();
       final j = jsonDecode(txt) as Map;
-      if (j['ok'] == true) await _setCoins((j['coins'] as num?)?.toInt() ?? 0);
+      if (j['ok'] == true) {
+        final tx = j['txt'];
+        if (tx is Map) {
+          _txt = tx.map((k, v) => MapEntry(k.toString(), v.toString()));
+          (await SharedPreferences.getInstance()).setString('adminTxt', jsonEncode(_txt));
+        }
+        await _setCoins((j['coins'] as num?)?.toInt() ?? 0);
+      }
     } catch (_) {} // لا يوقف اللعبة أبداً
   }
 
   Future<void> _setCoins(int c) async {
     final p = await SharedPreferences.getInstance();
     final seen = p.getInt('coinsSeen');
-    if (seen != null && c > seen) Push.toast('🎁 وصلك ${c - seen} فلس من الإدارة');
+    if (seen != null && c > seen) Push.toast(t('giftMsg', '🎁 وصلك {n} فلس من الإدارة').replaceAll('{n}', '${c - seen}'));
     await p.setInt('coinsSeen', c);
     coins.value = c;
   }
