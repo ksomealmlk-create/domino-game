@@ -331,6 +331,14 @@ void handle(Client c, Map<String, dynamic> m) {
         if (r.quick && r.full) r.start();
         break;
       }
+    case 'invite':
+      {
+        // صاحب غرفة خاصة لم تبدأ: يبلّغ كل اللاعبين (يمر عبر لوحة الإدارة التي تحدد المهلة والإيقاف)
+        final r = c.room;
+        if (r == null || r.started || r.quick || c.seat != 0) return;
+        Admin.invite(c, r);
+        break;
+      }
     case 'start':
       {
         final r = c.room;
@@ -439,6 +447,25 @@ class Admin {
         {'k': 'join', 'did': c.did, 'name': c.name, 'room': r.code, 'online': clients.length}
       ]
     });
+  }
+
+  static Future<void> invite(Client c, Room r) async {
+    if (!on) {
+      c.send({'t': 'note', 'm': 'الإبلاغ غير متاح حالياً'});
+      return;
+    }
+    final j = await _post('/api/domino/invite', {'did': c.did, 'name': c.name, 'room': r.code});
+    if (j == null) {
+      c.send({'t': 'note', 'm': 'تعذر إبلاغ اللاعبين، جرّب بعد شوي'});
+    } else if (j['ok'] == true) {
+      c.send({'t': 'note', 'm': 'تم إبلاغ اللاعبين ✅ انتظرهم بالغرفة'});
+    } else if (j['error'] == 'wait') {
+      c.send({'t': 'note', 'm': 'انتظر ${j['wait']} ثانية قبل ما تبلّغ مرة ثانية'});
+    } else if (j['error'] == 'off') {
+      c.send({'t': 'note', 'm': 'الإدارة أوقفت خاصية الإبلاغ'});
+    } else {
+      c.send({'t': 'note', 'm': 'تعذر إبلاغ اللاعبين'});
+    }
   }
 
   static List<Map<String, String>> _humans(Room r) => [

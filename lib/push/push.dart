@@ -10,6 +10,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// بيانات Firebase هنا هي بيانات تطبيق العميل (موجودة بأي APK) وليست أسراراً.
 class Push {
   static final GlobalKey<ScaffoldMessengerState> messenger = GlobalKey<ScaffoldMessengerState>();
+  static final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
+  /// يُضبط من main: يفتح صفحة الأونلاين وينضم للغرفة مباشرة.
+  static void Function(String room)? onInvite;
+  static String myDid = '';
+  static int online = 0; // كم صفحة أونلاين مفتوحة الآن
   static const adminUrl = 'https://skar-subs.ksomealmlk.workers.dev';
   static const _opts = FirebaseOptions(
     apiKey: 'AIzaSyAEN2pMLaWTE7LKq0px-ayaUa_IWsybYuY',
@@ -48,6 +53,37 @@ class Push {
     }
   }
 
+  /// ضغط على إشعار دعوة: ينقله للغرفة (ويتجاهل دعوتك أنت).
+  static void _tap(RemoteMessage r) {
+    final d = r.data;
+    if (d['type'] != 'invite' || d['from'] == myDid) return;
+    final room = (d['room'] ?? '').toString();
+    if (room.isNotEmpty) _open(room, 0);
+  }
+
+  static void _open(String room, int tries) {
+    if (navKey.currentState != null && onInvite != null) {
+      onInvite!(room);
+    } else if (tries < 25) {
+      Future.delayed(const Duration(milliseconds: 300), () => _open(room, tries + 1));
+    }
+  }
+
+  /// دعوة والتطبيق مفتوح: شريط بزر انضمام.
+  static void _fgInvite(RemoteMessage r) {
+    final d = r.data;
+    if (d['from'] == myDid) return;
+    final room = (d['room'] ?? '').toString();
+    final n = r.notification;
+    final t = [if ((n?.title ?? '').isNotEmpty) n!.title!, if ((n?.body ?? '').isNotEmpty) n!.body!].join('\n');
+    messenger.currentState?.showSnackBar(SnackBar(
+      content: Text(t.isEmpty ? 'لاعب يدعوك للعب' : t),
+      duration: const Duration(seconds: 12),
+      behavior: SnackBarBehavior.floating,
+      action: (room.isEmpty || online > 0) ? null : SnackBarAction(label: 'انضم', onPressed: () => _open(room, 0)),
+    ));
+  }
+
   /// لا يوقف اللعبة أبداً إذا فشل (لا إنترنت، رفض الإذن، إلخ).
   static Future<void> init() async {
     try {
@@ -58,7 +94,14 @@ class Push {
       final adm = (await SharedPreferences.getInstance()).getString('admTopic');
       if (adm != null && adm.isNotEmpty) await m.subscribeToTopic(adm);
       // إشعار والتطبيق مفتوح: يظهر شريط بالأعلى لأن النظام ما يعرضه لحاله
+      FirebaseMessaging.onMessageOpenedApp.listen(_tap);
+      final first = await m.getInitialMessage();
+      if (first != null) _tap(first);
       FirebaseMessaging.onMessage.listen((RemoteMessage r) {
+        if (r.data['type'] == 'invite') {
+          _fgInvite(r);
+          return;
+        }
         final n = r.notification;
         if (n == null) return;
         final t = [if ((n.title ?? '').isNotEmpty) n.title!, if ((n.body ?? '').isNotEmpty) n.body!].join('\n');

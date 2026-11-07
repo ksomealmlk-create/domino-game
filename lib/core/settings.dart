@@ -36,6 +36,7 @@ class Settings extends ChangeNotifier {
   bool sound = true;
   bool shadows = true;
   bool hints = true;
+  bool inviteOnCreate = false; // يبلّغ اللاعبين تلقائياً عند إنشاء غرفة خاصة
   int speed = 1; // 0 بطيء 1 عادي 2 سريع
   static const String kServer = 'wss://domino-game-7hvz.onrender.com';
   String get server => kServer;
@@ -67,6 +68,7 @@ class Settings extends ChangeNotifier {
     sound = _p.getBool('sound') ?? sound;
     shadows = _p.getBool('shadows') ?? shadows;
     hints = _p.getBool('hints') ?? hints;
+    inviteOnCreate = _p.getBool('inviteOnCreate') ?? inviteOnCreate;
     speed = _p.getInt('speed') ?? speed;
   }
 
@@ -85,6 +87,7 @@ class Settings extends ChangeNotifier {
     _p.setBool('sound', sound);
     _p.setBool('shadows', shadows);
     _p.setBool('hints', hints);
+    _p.setBool('inviteOnCreate', inviteOnCreate);
     _p.setInt('speed', speed);
   }
 

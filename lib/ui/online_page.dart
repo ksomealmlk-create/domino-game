@@ -2,13 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../core/settings.dart';
 import '../net/online.dart';
+import '../push/push.dart';
 import 'game_page.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
 class OnlinePage extends StatefulWidget {
   final Settings st;
-  const OnlinePage({super.key, required this.st});
+  final String? autoJoin; // كود غرفة قادم من إشعار الدعوة
+  const OnlinePage({super.key, required this.st, this.autoJoin});
 
   @override
   State<OnlinePage> createState() => _OnlinePageState();
@@ -21,7 +23,12 @@ class _OnlinePageState extends State<OnlinePage> {
   @override
   void initState() {
     super.initState();
+    Push.online++;
     OnlineController.wake(widget.st.server);
+    final aj = widget.autoJoin;
+    if (aj != null && aj.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.join(aj));
+    }
     ctrl.addListener(() {
       if (mounted) setState(() {});
     });
@@ -29,6 +36,7 @@ class _OnlinePageState extends State<OnlinePage> {
 
   @override
   void dispose() {
+    Push.online--;
     _code.dispose();
     ctrl.dispose();
     super.dispose();
@@ -85,6 +93,16 @@ class _OnlinePageState extends State<OnlinePage> {
         GoldButton(busy ? 'جاري الاتصال… (أول مرة قد ياخذ دقيقة)' : 'مباراة سريعة', icon: Icons.bolt_rounded, onTap: busy ? null : ctrl.quick),
         const SizedBox(height: 12),
         GoldButton('إنشاء غرفة خاصة', ghost: true, icon: Icons.add_circle_outline_rounded, onTap: busy ? null : ctrl.create),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          activeColor: kGold,
+          title: const Text('📣 أبلغ اللاعبين لما أنشئ غرفة', style: TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: const Text('يوصل إشعار لكل اللاعبين وينقلهم مباشرة لغرفتك', style: TextStyle(color: Colors.white54, fontSize: 12)),
+          value: st.inviteOnCreate,
+          onChanged: (v) => setState(() => st.update(() => st.inviteOnCreate = v)),
+        ),
         const SizedBox(height: 16),
         Panel(
           child: Row(
@@ -145,6 +163,8 @@ class _OnlinePageState extends State<OnlinePage> {
           ),
         ),
         const SizedBox(height: 16),
+        if (l.host && !l.quick) GoldButton('أبلغ اللاعبين', ghost: true, icon: Icons.campaign_rounded, onTap: ctrl.invite),
+        if (l.host && !l.quick) const SizedBox(height: 10),
         if (l.host && !l.quick) GoldButton('ابدأ الآن (البقية بوتات)', icon: Icons.play_arrow_rounded, onTap: ctrl.startNow),
         const SizedBox(height: 10),
         GoldButton('خروج', ghost: true, onTap: ctrl.reset),

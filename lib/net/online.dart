@@ -32,6 +32,7 @@ class OnlineController extends GameController {
   String? _toast;
   Timer? _tt;
   bool _closed = false;
+  bool _inviteAfter = false;
 
   @override
   GameView? get view => _view;
@@ -94,7 +95,13 @@ class OnlineController extends GameController {
   Map<String, dynamic> _cfg() => {'name': st.displayName, 'five': st.five, 'n': st.players, 'target': st.target, 'did': st.deviceId, if (st.avatarB64.isNotEmpty) 'av': st.avatarB64};
 
   Future<void> quick() => _connect({'t': 'quick', ..._cfg()});
-  Future<void> create() => _connect({'t': 'create', ..._cfg()});
+  Future<void> create() {
+    _inviteAfter = st.inviteOnCreate;
+    return _connect({'t': 'create', ..._cfg()});
+  }
+
+  /// يبلّغ كل اللاعبين بغرفتك (إشعار ينقلهم مباشرة لها)
+  void invite() => _send({'t': 'invite'});
   Future<void> join(String code) => _connect({'t': 'join', 'code': _normCode(code), 'name': st.displayName, 'did': st.deviceId, if (st.avatarB64.isNotEmpty) 'av': st.avatarB64});
 
   static String _normCode(String v) {
@@ -121,6 +128,10 @@ class OnlineController extends GameController {
           lobby = LobbyInfo(m['code'] as String, m['n'] as int, m['five'] as bool,
               List<String?>.from(m['players'] as List), m['host'] as bool, (m['quick'] as bool?) ?? false);
           if (status != OnlineStatus.playing) status = OnlineStatus.lobby;
+          if (_inviteAfter && lobby!.host && !lobby!.quick) {
+            _inviteAfter = false;
+            invite();
+          }
           break;
         case 'state':
           final v = GameView.fromJson(m);
