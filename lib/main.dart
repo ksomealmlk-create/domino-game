@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'audio/sfx.dart';
 import 'core/settings.dart';
+import 'net/presence.dart';
 import 'push/push.dart';
 import 'ui/menu_page.dart';
 import 'ui/online_page.dart';
@@ -25,6 +26,7 @@ Future<void> main() async {
   };
   runApp(DominoApp(st: st));
   Push.init(); // بعد فتح اللعبة حتى لا يؤخرها
+  Presence.start(st); // تعرف الإدارة إنك فتحت اللعبة
 }
 
 class DominoApp extends StatelessWidget {

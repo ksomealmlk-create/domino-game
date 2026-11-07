@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/rules.dart';
 import '../core/settings.dart';
 import '../game/controller.dart';
+import '../net/presence.dart';
 import '../push/push.dart';
 import 'game_page.dart';
 import 'avatar_widget.dart';
@@ -118,6 +119,15 @@ class _MenuPageState extends State<MenuPage> with SingleTickerProviderStateMixin
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              ValueListenableBuilder<int>(
+                valueListenable: Presence.coins,
+                builder: (_, c, __) => c <= 0
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsetsDirectional.only(end: 10),
+                        child: Text('🪙 $c', style: const TextStyle(fontWeight: FontWeight.w800, color: kGoldLight)),
+                      ),
+              ),
               Text(widget.st.displayName, style: const TextStyle(fontWeight: FontWeight.w700, color: kGoldLight)),
               const SizedBox(width: 8),
               AvatarCircle(bytes: widget.st.avatarBytes, name: widget.st.displayName, radius: 16, active: true),

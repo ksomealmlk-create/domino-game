@@ -1,0 +1,70 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../core/settings.dart';
+import '../push/push.dart';
+
+/// يخبر الإدارة إن اللاعب فتح اللعبة (ويحسب أنه "فاتح" ما دام مفتوحة)، ويجيب رصيد الفلوس.
+class Presence with WidgetsBindingObserver {
+  Presence._();
+  static final Presence i = Presence._();
+
+  /// رصيد الفلوس (من الإدارة). يتحدّث مع كل نبضة.
+  static final ValueNotifier<int> coins = ValueNotifier<int>(0);
+
+  Settings? _st;
+  Timer? _tm;
+  DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
+
+  static void start(Settings st) {
+    i._st = st;
+    WidgetsBinding.instance.addObserver(i);
+    i._beat(false);
+    i._timer();
+  }
+
+  void _timer() {
+    _tm?.cancel();
+    _tm = Timer.periodic(const Duration(minutes: 2), (_) => _beat(true));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) {
+      // رجع من الخلفية: إذا غاب أكثر من 10 دقائق نعدّها فتحة جديدة
+      final away = DateTime.now().difference(_last) > const Duration(minutes: 10);
+      _beat(!away);
+      _timer();
+    } else if (s == AppLifecycleState.paused) {
+      _tm?.cancel(); // التطبيق بالخلفية: لا نبضات
+    }
+  }
+
+  Future<void> _beat(bool hb) async {
+    final st = _st;
+    if (st == null) return;
+    _last = DateTime.now();
+    try {
+      final hc = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+      final rq = await hc.postUrl(Uri.parse('${Push.adminUrl}/api/domino/open'));
+      rq.headers.contentType = ContentType.json;
+      rq.write(jsonEncode({'did': st.deviceId, 'name': st.displayName, 'hb': hb}));
+      final rs = await rq.close().timeout(const Duration(seconds: 15));
+      final txt = await rs.transform(utf8.decoder).join();
+      hc.close();
+      final j = jsonDecode(txt) as Map;
+      if (j['ok'] == true) await _setCoins((j['coins'] as num?)?.toInt() ?? 0);
+    } catch (_) {} // لا يوقف اللعبة أبداً
+  }
+
+  Future<void> _setCoins(int c) async {
+    final p = await SharedPreferences.getInstance();
+    final seen = p.getInt('coinsSeen');
+    if (seen != null && c > seen) Push.toast('🎁 وصلك ${c - seen} فلس من الإدارة');
+    await p.setInt('coinsSeen', c);
+    coins.value = c;
+  }
+}
