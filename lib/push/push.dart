@@ -56,7 +56,7 @@ class Push {
   /// ضغط على إشعار دعوة: ينقله للغرفة (ويتجاهل دعوتك أنت).
   static void _tap(RemoteMessage r) {
     final d = r.data;
-    if (d['type'] != 'invite' || d['from'] == myDid) return;
+    if (d['type'] != 'invite' || (d['sender'] ?? d['from']) == myDid) return;
     final room = (d['room'] ?? '').toString();
     if (room.isNotEmpty) _open(room, 0);
   }
@@ -72,7 +72,7 @@ class Push {
   /// دعوة والتطبيق مفتوح: شريط بزر انضمام.
   static void _fgInvite(RemoteMessage r) {
     final d = r.data;
-    if (d['from'] == myDid) return;
+    if ((d['sender'] ?? d['from']) == myDid) return;
     final room = (d['room'] ?? '').toString();
     final n = r.notification;
     final t = [if ((n?.title ?? '').isNotEmpty) n!.title!, if ((n?.body ?? '').isNotEmpty) n!.body!].join('\n');
