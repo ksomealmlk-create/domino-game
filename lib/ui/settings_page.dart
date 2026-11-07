@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../audio/sfx.dart';
 import '../core/rules.dart';
 import '../core/settings.dart';
+import 'patterns.dart';
 import 'theme.dart';
 import 'tile_painter.dart';
 import 'widgets.dart';
@@ -90,44 +91,76 @@ class _SettingsPageState extends State<SettingsPage> {
               _switch('إضاءة الأحجار المتاحة', st.hints, (v) => st.update(() => st.hints = v)),
             ]),
             _section('المظهر', [
-              _label('لون الطاولة'),
-              Row(
-                children: [
-                  for (var i = 0; i < tableThemes.length; i++)
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => st.update(() => st.table = i),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                          height: 64,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(14),
-                            gradient: RadialGradient(colors: [tableThemes[i].felt, tableThemes[i].feltDark]),
-                            border: Border.all(color: st.table == i ? kGold : Colors.white24, width: st.table == i ? 3 : 1),
-                          ),
-                          alignment: Alignment.bottomCenter,
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: Text(tableThemes[i].name, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+              _label('الطاولة (${tableThemes.length} شكل، اسحب لترى الباقي)'),
+              SizedBox(
+                height: 82,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: tableThemes.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) => GestureDetector(
+                    onTap: () => st.update(() => st.table = i),
+                    child: Container(
+                      width: 100,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: st.table == i ? kGold : Colors.white24, width: st.table == i ? 3 : 1),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(11),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            CustomPaint(painter: _TableChipPainter(tableThemes[i])),
+                            Align(
+                              alignment: Alignment.bottomCenter,
+                              child: Padding(
+                                padding: const EdgeInsets.only(bottom: 4, left: 3, right: 3),
+                                child: Text(
+                                  tableThemes[i].name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w800,
+                                      color: Colors.white,
+                                      shadows: [Shadow(color: Colors.black, blurRadius: 4)]),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                ],
+                  ),
+                ),
               ),
-              _label('شكل الأحجار'),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  for (var i = 0; i < tileStyles.length; i++)
-                    GestureDetector(
-                      onTap: () => st.update(() => st.tiles = i),
+              _label('الأحجار (${tileStyles.length} شكل، اسحب لترى الباقي)'),
+              SizedBox(
+                height: 146,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: tileStyles.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 10),
+                  itemBuilder: (_, i) => GestureDetector(
+                    onTap: () => st.update(() => st.tiles = i),
+                    child: SizedBox(
+                      width: 66,
                       child: Column(
                         children: [
                           TileWidget(tile: const Tile(4, 6), st: tileStyles[i], w: 40, h: 80, glow: st.tiles == i),
-                          Text(tileStyles[i].name, style: TextStyle(fontWeight: FontWeight.w800, color: st.tiles == i ? kGold : Colors.white60)),
+                          Text(tileStyles[i].name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: st.tiles == i ? kGold : Colors.white60)),
                         ],
                       ),
                     ),
-                ],
+                  ),
+                ),
               ),
               _switch('الظلال الواقعية', st.shadows, (v) => st.update(() => st.shadows = v)),
             ]),
@@ -144,4 +177,28 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
+}
+
+class _TableChipPainter extends CustomPainter {
+  final TableTheme th;
+  _TableChipPainter(this.th);
+
+  @override
+  void paint(Canvas c, Size s) {
+    final r = Offset.zero & s;
+    c.drawRect(r, Paint()..shader = RadialGradient(colors: [th.felt, th.feltDark]).createShader(r));
+    c.save();
+    c.clipRect(r);
+    paintTablePattern(c, s, th);
+    c.restore();
+    c.drawRect(
+        r.deflate(1.5),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = th.frame[1]);
+  }
+
+  @override
+  bool shouldRepaint(covariant _TableChipPainter old) => old.th != th;
 }

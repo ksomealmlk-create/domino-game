@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'dart:ui' show PointMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -7,6 +8,7 @@ import '../audio/sfx.dart';
 import '../core/rules.dart';
 import '../core/settings.dart';
 import '../core/view.dart';
+import 'patterns.dart';
 import 'theme.dart';
 import 'tile_painter.dart';
 
@@ -367,6 +369,10 @@ final List<Offset> _noise = () {
   return List.generate(600, (_) => Offset(r.nextDouble(), r.nextDouble()));
 }();
 
+// زخرفة الطاولة تُرسم مرة وحدة وتُخزَّن كصورة (حتى ما تبطّئ اللعبة)
+ui.Picture? _patPic;
+String _patKey = '';
+
 class _TablePainter extends CustomPainter {
   final List<_Item> items;
   final double s, t, celebrate, margin;
@@ -457,10 +463,10 @@ class _TablePainter extends CustomPainter {
     canvas.drawRRect(
       outer,
       Paint()
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFF8A5A33), Color(0xFF4E2F18), Color(0xFF2B170A)],
+          colors: th.frame,
         ).createShader(full),
     );
     canvas.save();
@@ -468,9 +474,11 @@ class _TablePainter extends CustomPainter {
     final grain = Paint()
       ..color = alpha(Colors.black, 0.10)
       ..strokeWidth = 1;
-    for (var i = 0; i < 40; i++) {
-      final y = size.height * (i + 0.5) / 40;
-      canvas.drawLine(Offset(0, y + math.sin(i * 1.7) * 3), Offset(size.width, y + math.cos(i * 1.3) * 3), grain);
+    if (th.grain) {
+      for (var i = 0; i < 40; i++) {
+        final y = size.height * (i + 0.5) / 40;
+        canvas.drawLine(Offset(0, y + math.sin(i * 1.7) * 3), Offset(size.width, y + math.cos(i * 1.3) * 3), grain);
+      }
     }
     canvas.restore();
 
@@ -480,13 +488,13 @@ class _TablePainter extends CustomPainter {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.8
-          ..color = alpha(kGold, 0.9));
+          ..color = alpha(th.inlay, 0.9));
     canvas.drawRRect(
         outer.deflate(11),
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 0.9
-          ..color = alpha(kGoldDark, 0.8));
+          ..color = alpha(Color.lerp(th.inlay, Colors.black, 0.45)!, 0.8));
 
     // القماش (الجوخ)
     final felt = outer.deflate(16);
@@ -502,14 +510,28 @@ class _TablePainter extends CustomPainter {
     );
     canvas.save();
     canvas.clipRRect(felt);
-    final dots = [for (final o in _noise) Offset(feltRect.left + o.dx * feltRect.width, feltRect.top + o.dy * feltRect.height)];
-    canvas.drawPoints(
-        PointMode.points,
-        dots,
-        Paint()
-          ..color = alpha(Colors.white, 0.07)
-          ..strokeWidth = 1.4
-          ..strokeCap = StrokeCap.round);
+    if (th.pat == TablePattern.felt) {
+      final dots = [for (final o in _noise) Offset(feltRect.left + o.dx * feltRect.width, feltRect.top + o.dy * feltRect.height)];
+      canvas.drawPoints(
+          PointMode.points,
+          dots,
+          Paint()
+            ..color = alpha(Colors.white, 0.07)
+            ..strokeWidth = 1.4
+            ..strokeCap = StrokeCap.round);
+    } else {
+      final key = '${th.name}|${feltRect.width.round()}x${feltRect.height.round()}';
+      if (_patKey != key || _patPic == null) {
+        final rec = ui.PictureRecorder();
+        paintTablePattern(Canvas(rec), feltRect.size, th);
+        _patPic = rec.endRecording();
+        _patKey = key;
+      }
+      canvas.save();
+      canvas.translate(feltRect.left, feltRect.top);
+      canvas.drawPicture(_patPic!);
+      canvas.restore();
+    }
     // ظل داخلي
     canvas.drawRRect(
         felt,

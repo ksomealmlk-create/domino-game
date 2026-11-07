@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show PointMode;
 import 'package:flutter/material.dart';
 import '../core/rules.dart';
 import 'theme.dart';
@@ -72,6 +73,25 @@ void paintTile(
     ).createShader(top);
   c.drawRRect(trr, facePaint);
 
+  // زخرفة الخامة (رخام، خشب، كربون، معدن، جلد، جواهر) + خط التطعيم
+  if (!back) {
+    if (st.pat != TilePattern.none) {
+      c.save();
+      c.clipRRect(trr);
+      _tilePattern(c, top, st);
+      c.restore();
+    }
+    final tr = st.trim;
+    if (tr != null) {
+      c.drawRRect(
+          trr.deflate(math.min(w, h) * 0.09),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.1
+            ..color = alpha(tr, 0.8));
+    }
+  }
+
   // لمعة الحافة
   c.drawRRect(
     trr.deflate(0.8),
@@ -137,6 +157,159 @@ void paintTile(
 
   if (dim > 0) {
     c.drawRRect(trr, Paint()..color = alpha(Colors.black, dim));
+  }
+}
+
+int _seedOf(String s) => s.codeUnits.fold<int>(7, (a, b) => (a * 31 + b) & 0x7fffffff);
+
+void _tilePattern(Canvas c, Rect top, TileStyle st) {
+  final rnd = math.Random(_seedOf(st.name));
+  final pc = st.patColor;
+  final w = top.width, h = top.height;
+  switch (st.pat) {
+    case TilePattern.none:
+      break;
+    case TilePattern.marble:
+      {
+        final p = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round;
+        for (var i = 0; i < 6; i++) {
+          final path = Path();
+          var x = top.left + rnd.nextDouble() * w, y = top.top;
+          path.moveTo(x, y);
+          for (var k = 1; k <= 4; k++) {
+            final nx = x + (rnd.nextDouble() - 0.5) * w * 0.7;
+            final ny = top.top + h * k / 4;
+            path.quadraticBezierTo(x + (rnd.nextDouble() - 0.5) * w * 0.6, (y + ny) / 2, nx, ny);
+            x = nx;
+            y = ny;
+          }
+          p.strokeWidth = 0.5 + rnd.nextDouble() * 1.3;
+          p.color = alpha(pc, 0.16 + rnd.nextDouble() * 0.30);
+          c.drawPath(path, p);
+        }
+        break;
+      }
+    case TilePattern.wood:
+      {
+        final vert = h >= w;
+        const n = 9;
+        final p = Paint()..style = PaintingStyle.stroke;
+        for (var i = 0; i < n; i++) {
+          final t = (i + 0.3 + rnd.nextDouble() * 0.4) / n;
+          final path = Path();
+          final amp = (vert ? w : h) * (0.015 + rnd.nextDouble() * 0.04);
+          final ph = rnd.nextDouble() * 6;
+          const steps = 8;
+          for (var k = 0; k <= steps; k++) {
+            final u = k / steps;
+            final off = math.sin(u * 5 + ph) * amp;
+            final pt = vert
+                ? Offset(top.left + w * t + off, top.top + h * u)
+                : Offset(top.left + w * u, top.top + h * t + off);
+            if (k == 0) {
+              path.moveTo(pt.dx, pt.dy);
+            } else {
+              path.lineTo(pt.dx, pt.dy);
+            }
+          }
+          p.strokeWidth = 0.6 + rnd.nextDouble() * 1.2;
+          p.color = alpha(pc, 0.12 + rnd.nextDouble() * 0.22);
+          c.drawPath(path, p);
+        }
+        break;
+      }
+    case TilePattern.carbon:
+      {
+        final s = math.max(3.4, math.min(w, h) / 9);
+        final a = Path(), b = Path();
+        var yi = 0;
+        for (double y = top.top; y < top.bottom; y += s, yi++) {
+          var xi = 0;
+          for (double x = top.left; x < top.right; x += s, xi++) {
+            final r = Rect.fromLTWH(x, y, s, s);
+            if ((xi + yi).isEven) {
+              a.addRect(r);
+            } else {
+              b.addRect(r);
+            }
+          }
+        }
+        c.drawPath(a, Paint()..color = alpha(Colors.white, 0.09));
+        c.drawPath(b, Paint()..color = alpha(Colors.black, 0.28));
+        break;
+      }
+    case TilePattern.brushed:
+      {
+        final l = Paint()..strokeWidth = 0.9;
+        for (double y = top.top; y < top.bottom; y += 2.0) {
+          final t = rnd.nextDouble();
+          l.color = t > 0.5 ? alpha(pc, (t - 0.5) * 0.28) : alpha(Colors.black, (0.5 - t) * 0.22);
+          c.drawLine(Offset(top.left, y), Offset(top.right, y), l);
+        }
+        c.drawRect(
+            top,
+            Paint()
+              ..shader = LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [alpha(pc, 0.40), alpha(pc, 0.0), alpha(pc, 0.20), alpha(pc, 0.0)],
+                stops: const [0.0, 0.35, 0.62, 1.0],
+              ).createShader(top));
+        break;
+      }
+    case TilePattern.sparkle:
+      {
+        final f1 = Path()
+          ..moveTo(top.left, top.top)
+          ..lineTo(top.right, top.top)
+          ..lineTo(top.center.dx, top.top + h * 0.38)
+          ..close();
+        c.drawPath(f1, Paint()..color = alpha(Colors.white, 0.14));
+        final f2 = Path()
+          ..moveTo(top.left, top.bottom)
+          ..lineTo(top.right, top.bottom)
+          ..lineTo(top.center.dx, top.bottom - h * 0.38)
+          ..close();
+        c.drawPath(f2, Paint()..color = alpha(Colors.black, 0.16));
+        final pts = <Offset>[
+          for (var i = 0; i < 26; i++) Offset(top.left + rnd.nextDouble() * w, top.top + rnd.nextDouble() * h)
+        ];
+        c.drawPoints(PointMode.points, pts, Paint()
+          ..color = alpha(pc, 0.65)
+          ..strokeWidth = 1.3
+          ..strokeCap = StrokeCap.round);
+        c.drawPoints(PointMode.points, pts.take(5).toList(), Paint()
+          ..color = alpha(Colors.white, 0.95)
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round);
+        break;
+      }
+    case TilePattern.leather:
+      {
+        const g = 4.0;
+        final dark = <Offset>[], light = <Offset>[];
+        for (double y = top.top + 2; y < top.bottom; y += g) {
+          for (double x = top.left + 2; x < top.right; x += g) {
+            final o = Offset(x + (rnd.nextDouble() - 0.5) * 2, y + (rnd.nextDouble() - 0.5) * 2);
+            if (rnd.nextBool()) {
+              dark.add(o);
+            } else {
+              light.add(o);
+            }
+          }
+        }
+        c.drawPoints(PointMode.points, dark, Paint()
+          ..color = alpha(Colors.black, 0.28)
+          ..strokeWidth = 1.4
+          ..strokeCap = StrokeCap.round);
+        c.drawPoints(PointMode.points, light, Paint()
+          ..color = alpha(pc, 0.10)
+          ..strokeWidth = 1.2
+          ..strokeCap = StrokeCap.round);
+        break;
+      }
   }
 }
 
