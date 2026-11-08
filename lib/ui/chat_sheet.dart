@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../net/online.dart';
 import 'theme.dart';
@@ -66,12 +67,14 @@ class _ChatSheetState extends State<_ChatSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final kb = MediaQuery.of(context).viewInsets.bottom;
-    final h = MediaQuery.of(context).size.height;
+    final mq = MediaQuery.of(context);
+    final kb = mq.viewInsets.bottom;
+    final safe = mq.viewPadding.bottom;
+    final h = mq.size.height;
     return Padding(
       padding: EdgeInsets.only(bottom: kb),
       child: Container(
-        height: h * 0.55,
+        height: math.min(h * 0.6, h - kb - 40),
         decoration: const BoxDecoration(
           color: Color(0xFF10151F),
           borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
@@ -117,20 +120,41 @@ class _ChatSheetState extends State<_ChatSheet> {
                 ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 6, 10),
+            Container(
+              margin: EdgeInsets.fromLTRB(10, 4, 10, 10 + (kb > 0 ? 0 : safe)),
+              padding: const EdgeInsets.fromLTRB(14, 2, 4, 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1B2332),
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: kGold, width: 1.4),
+              ),
               child: Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _tc,
                       maxLength: 120,
+                      textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _send(),
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(counterText: '', hintText: 'اكتب رسالة…', hintStyle: TextStyle(color: Colors.white38)),
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      cursorColor: kGold,
+                      decoration: const InputDecoration(
+                        counterText: '',
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        filled: false,
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(vertical: 12),
+                        hintText: 'اكتب رسالتك هنا…',
+                        hintStyle: TextStyle(color: Colors.white54),
+                      ),
                     ),
                   ),
-                  IconButton(onPressed: _send, icon: const Icon(Icons.send_rounded, color: kGold)),
+                  Container(
+                    decoration: const BoxDecoration(color: kGold, shape: BoxShape.circle),
+                    child: IconButton(onPressed: _send, icon: const Icon(Icons.send_rounded, color: Color(0xFF1A1405))),
+                  ),
                 ],
               ),
             ),
