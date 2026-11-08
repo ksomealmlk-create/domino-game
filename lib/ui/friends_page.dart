@@ -101,6 +101,14 @@ class _FriendsPageState extends State<FriendsPage> {
               ],
             ),
             const Text('أعطه لأصدقائك حتى يضيفونك', style: TextStyle(color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 12),
+            if (c.gLinked)
+              Text('🔗 حسابك مرتبط بجيميل${c.gEmail.isEmpty ? '' : ': ${c.gEmail}'}', textAlign: TextAlign.center, style: const TextStyle(color: kGoldLight, fontSize: 13))
+            else ...[
+              GoldButton('ربط حسابي بجيميل', ghost: true, icon: Icons.account_circle_rounded, fontSize: 14, onTap: c.googleAuth),
+              const SizedBox(height: 6),
+              const Text('إذا غيّرت هاتفك أو مسحت اللعبة، سجّل بنفس الجيميل ويرجع رقمك وأصدقاؤك', textAlign: TextAlign.center, style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.4)),
+            ],
           ],
         ),
       );

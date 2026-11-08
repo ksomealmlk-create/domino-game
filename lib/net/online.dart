@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import '../audio/sfx.dart';
+import '../core/google_auth.dart';
 import '../core/settings.dart';
 import '../core/view.dart';
 import '../game/controller.dart';
@@ -97,6 +99,8 @@ class OnlineController extends GameController {
   int myId = 0;
   List<Friend> friends = const [], inReq = const [], outReq = const [];
   bool friendsLoaded = false;
+  bool gLinked = false;
+  String gEmail = '';
   List<int> _ids = const [];
   int idAt(int p) => p >= 0 && p < _ids.length ? _ids[p] : 0;
   bool isFriend(int id) => friends.any((f) => f.id == id);
@@ -259,6 +263,24 @@ class OnlineController extends GameController {
   void wantPlay() => _send({'t': 'wantplay'});
 
   // ----- الأصدقاء -----
+  /// ربط الحساب بجيميل (أو استرجاع حسابك القديم إذا الجيميل مربوط من قبل)
+  Future<void> googleAuth() async {
+    if (myId == 0) {
+      Push.toast('انتظر شوي حتى يتصل الحساب');
+      return;
+    }
+    try {
+      final t = await GoogleAuth.idToken();
+      if (t == null) return;
+      Push.toast('جاري التحقق من حسابك…');
+      _send({'t': 'gauth', 'tok': t});
+    } on PlatformException catch (e) {
+      Push.toast('تعذّر تسجيل الدخول بجوجل (${e.code})');
+    } catch (_) {
+      Push.toast('تعذّر تسجيل الدخول بجوجل');
+    }
+  }
+
   void friendsRefresh() => _send({'t': 'fr', 'op': 'list'});
   void friendReq(int id) => _send({'t': 'fr', 'op': 'req', 'id': id});
   void friendAccept(int id) => _send({'t': 'fr', 'op': 'accept', 'id': id});
@@ -341,8 +363,13 @@ class OnlineController extends GameController {
             inReq = fl('inReq');
             outReq = fl('outReq');
             friendsLoaded = true;
+            gLinked = m['g'] == true;
+            gEmail = (m['email'] ?? '').toString();
             break;
           }
+        case 'gres':
+          Push.toast(m['mode'] == 'login' ? 'تم استرجاع حسابك ✅ رقمك وأصدقاؤك رجعوا' : 'تم ربط حسابك بجيميلك ✅');
+          break;
         case 'fnote':
           final fm = (m['m'] ?? '').toString();
           if (fm.isNotEmpty) Push.toast(fm);

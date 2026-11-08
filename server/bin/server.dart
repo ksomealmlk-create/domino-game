@@ -31,6 +31,7 @@ class Client {
   int seat = -1;
   int lastChat = 0, lastReq = 0;
   int pid = 0; // رقم اللاعب العام (ID)
+  String devId = ''; // معرّف الجهاز (للربط مع جيميل)
   Set<int> friends = {};
   Client(this.ws);
 
@@ -613,7 +614,15 @@ void handle(Client c, Map<String, dynamic> m) {
       {
         final d = (m['did'] ?? '').toString();
         if (!RegExp(r'^[A-Za-z0-9]{8,40}$').hasMatch(d)) return;
+        c.devId = d;
         Admin.acct({'op': 'ensure', 'did': d, 'name': _name(m['name'])}).then((j) => _frSend(c, j));
+        break;
+      }
+    case 'gauth':
+      {
+        final tok = (m['tok'] ?? '').toString();
+        if (c.pid == 0 || c.devId.isEmpty || tok.length < 100 || tok.length > 4000) return;
+        Admin.acct({'op': 'gauth', 'id': c.pid, 'did': c.devId, 'tok': tok}).then((j) => _frSend(c, j));
         break;
       }
     case 'fr':
@@ -704,15 +713,18 @@ Future<void> _frSend(Client c, Map<String, dynamic>? j) async {
       'already': 'هو صديقك بالفعل',
       'full': 'قائمة الأصدقاء ممتلئة',
       'none': 'ما يوجد طلب',
+      'badtoken': 'تعذّر التحقق من حساب جوجل، جرّب مرة ثانية',
       'bad': 'رقم غير صحيح',
     };
     c.send({'t': 'note', 'm': msgs[(j['error'] ?? '').toString()] ?? 'تعذّر تنفيذ الطلب'});
     return;
   }
   final me = Map<String, dynamic>.from(j['me'] as Map);
-  final first = c.pid == 0;
+  final old = c.pid;
   c.pid = (me['id'] as num).toInt();
+  if (old != 0 && old != c.pid && identical(byPid[old], c)) byPid.remove(old);
   byPid[c.pid] = c;
+  final first = old != c.pid;
   List<Map<String, dynamic>> ls(String k) => [for (final x in (j[k] as List)) Map<String, dynamic>.from(x as Map)];
   final fr = ls('friends');
   c.friends = {for (final f in fr) (f['id'] as num).toInt()};
@@ -722,7 +734,8 @@ Future<void> _frSend(Client c, Map<String, dynamic>? j) async {
     f['room'] = fc?.room?.code;
     f['live'] = fc?.room?.started ?? false;
   }
-  c.send({'t': 'fr', 'me': me, 'friends': fr, 'inReq': ls('inReq'), 'outReq': ls('outReq')});
+  c.send({'t': 'fr', 'me': me, 'friends': fr, 'inReq': ls('inReq'), 'outReq': ls('outReq'), 'g': j['g'] == true, 'email': (j['email'] ?? '').toString()});
+  if (j['mode'] != null) c.send({'t': 'gres', 'mode': j['mode']});
   final n = (j['notify'] as num?)?.toInt() ?? 0;
   if (n > 0) {
     final tc = byPid[n];
