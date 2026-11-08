@@ -265,7 +265,10 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                   pad: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
                   child: Row(
                     children: [
-                      AvatarCircle(bytes: _av(p), name: v.names[p], radius: small ? 15 : 19, active: v.turn == p && !v.over),
+                      GestureDetector(
+                        onTap: () => _playerCard(p, v),
+                        child: AvatarCircle(bytes: _av(p), name: v.names[p], radius: small ? 15 : 19, active: v.turn == p && !v.over),
+                      ),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Column(
@@ -501,6 +504,52 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ---------- بطاقة اللاعب (ID + إضافة صديق) ----------
+  void _playerCard(int p, GameView v) {
+    final oc = _oc;
+    if (oc == null) return;
+    final id = oc.idAt(p);
+    if (id == 0 || id == oc.myId) return;
+    final name = v.names[p];
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AnimatedBuilder(
+        animation: oc,
+        builder: (ctx, __) {
+          final isF = oc.isFriend(id);
+          final pend = oc.hasPending(id);
+          return Container(
+            padding: const EdgeInsets.all(20),
+            decoration: const BoxDecoration(
+              color: Color(0xFF10151F),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+              border: Border(top: BorderSide(color: kGold, width: 1.2)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: kGoldLight)),
+                  const SizedBox(height: 4),
+                  Text('ID: $id', style: const TextStyle(color: Colors.white60, letterSpacing: 1.5)),
+                  const SizedBox(height: 14),
+                  if (isF)
+                    const Text('صديقك ✅', style: TextStyle(color: kGoldLight, fontWeight: FontWeight.w700))
+                  else if (pend)
+                    const Text('تم إرسال طلب الصداقة — بانتظار الرد', style: TextStyle(color: Colors.white60))
+                  else
+                    GoldButton('إضافة صديق', icon: Icons.person_add_alt_1_rounded, onTap: () => oc.friendReq(id)),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

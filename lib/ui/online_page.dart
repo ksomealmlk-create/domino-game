@@ -6,6 +6,7 @@ import '../net/online.dart';
 import '../net/presence.dart';
 import '../push/push.dart';
 import 'chat_sheet.dart';
+import 'friends_page.dart';
 import 'game_page.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -88,6 +89,8 @@ class _OnlinePageState extends State<OnlinePage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _rooms(busy),
+        const SizedBox(height: 10),
+        _friendsBtn(),
         const SizedBox(height: 16),
         Panel(
           child: Column(
@@ -140,6 +143,22 @@ class _OnlinePageState extends State<OnlinePage> {
         const SizedBox(height: 14),
         const Text('المباراة السريعة تبحث عن لاعب حقيقي، وإن لم يوجد خلال ثوانٍ يُضاف بوت تلقائيًا.',
             textAlign: TextAlign.center, style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5)),
+      ],
+    );
+  }
+
+  void _openFriends() => Navigator.of(context).push(MaterialPageRoute(builder: (_) => FriendsPage(ctrl: ctrl)));
+
+  Widget _friendsBtn() {
+    final n = ctrl.inReq.length;
+    return Column(
+      children: [
+        GoldButton(n > 0 ? 'الأصدقاء ($n طلب جديد)' : 'الأصدقاء', ghost: true, icon: Icons.group_rounded, onTap: _openFriends),
+        if (ctrl.myId != 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('رقمك (ID): ${ctrl.myId}', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          ),
       ],
     );
   }
@@ -238,6 +257,8 @@ class _OnlinePageState extends State<OnlinePage> {
         if (l.host && !l.quick) GoldButton('ابدأ الآن (البقية بوتات)', icon: Icons.play_arrow_rounded, onTap: ctrl.startNow),
         const SizedBox(height: 10),
         GoldButton(ctrl.unread > 0 ? 'الدردشة (${ctrl.unread})' : 'الدردشة', ghost: true, icon: Icons.chat_bubble_outline_rounded, onTap: () => showChat(context, ctrl)),
+        const SizedBox(height: 10),
+        GoldButton('دعوة صديق', ghost: true, icon: Icons.person_add_alt_1_rounded, onTap: _openFriends),
         const SizedBox(height: 10),
         GoldButton('خروج', ghost: true, onTap: ctrl.reset),
       ],

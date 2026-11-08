@@ -39,6 +39,23 @@ class RoomInfo {
       );
 }
 
+/// صديق (أو طلب صداقة)
+class Friend {
+  final int id;
+  final String name;
+  final bool online, live;
+  final String? room;
+  const Friend(this.id, this.name, {this.online = false, this.room, this.live = false});
+
+  factory Friend.fromJson(Map<String, dynamic> j) => Friend(
+        (j['id'] as num).toInt(),
+        (j['name'] ?? '').toString(),
+        online: j['online'] == true,
+        room: j['room']?.toString(),
+        live: j['live'] == true,
+      );
+}
+
 class ChatMsg {
   final String name, text;
   final bool mine, spec;
@@ -75,6 +92,15 @@ class OnlineController extends GameController {
   bool chatOpen = false;
   List<String> specNames = const [];
   VoteReq? vote;
+
+  // الحساب والأصدقاء
+  int myId = 0;
+  List<Friend> friends = const [], inReq = const [], outReq = const [];
+  bool friendsLoaded = false;
+  List<int> _ids = const [];
+  int idAt(int p) => p >= 0 && p < _ids.length ? _ids[p] : 0;
+  bool isFriend(int id) => friends.any((f) => f.id == id);
+  bool hasPending(int id) => outReq.any((f) => f.id == id);
 
   /// وقت انتهاء دور اللاعب الحالي (null = لا يوجد مؤقت)
   DateTime? turnEnd;
@@ -119,6 +145,7 @@ class OnlineController extends GameController {
     _ws = w;
     w.pingInterval = const Duration(seconds: 20);
     w.listen(_onData, onDone: () => _onDone(w), onError: (_) => _onDone(w));
+    _send({'t': 'me', 'did': st.deviceId, 'name': st.displayName}); // تسجيل الحساب + رقم الـ ID
     return true;
   }
 
@@ -231,6 +258,14 @@ class OnlineController extends GameController {
   /// مشاهد: أريد ألعب من الجولة القادمة (يحتاج موافقة كل اللاعبين)
   void wantPlay() => _send({'t': 'wantplay'});
 
+  // ----- الأصدقاء -----
+  void friendsRefresh() => _send({'t': 'fr', 'op': 'list'});
+  void friendReq(int id) => _send({'t': 'fr', 'op': 'req', 'id': id});
+  void friendAccept(int id) => _send({'t': 'fr', 'op': 'accept', 'id': id});
+  void friendReject(int id) => _send({'t': 'fr', 'op': 'reject', 'id': id});
+  void friendRemove(int id) => _send({'t': 'fr', 'op': 'remove', 'id': id});
+  void friendInvite(int id) => _send({'t': 'finvite', 'id': id});
+
   void answerVote(bool ok) {
     _send({'t': 'vote', 'ok': ok});
     vote = null;
@@ -264,6 +299,7 @@ class OnlineController extends GameController {
             for (final x in (m['list'] as List))
               if (x == null) null else base64Decode(x as String)
           ];
+          _ids = [for (final x in (m['ids'] as List? ?? const [])) (x as num).toInt()];
           break;
         case 'rooms':
           rooms = [for (final x in (m['list'] as List)) RoomInfo.fromJson(Map<String, dynamic>.from(x as Map))];
@@ -293,8 +329,29 @@ class OnlineController extends GameController {
           });
           break;
         case 'tt':
-          final secs = (m['s'] as num?)?.toInt() ?? 0;
-          turnEnd = secs > 0 ? DateTime.now().add(Duration(seconds: secs)) : null;
+          final tsec = (m['s'] as num?)?.toInt() ?? 0;
+          turnEnd = tsec > 0 ? DateTime.now().add(Duration(seconds: tsec)) : null;
+          break;
+        case 'fr':
+          {
+            final me = Map<String, dynamic>.from(m['me'] as Map);
+            myId = (me['id'] as num).toInt();
+            List<Friend> fl(String k) => [for (final x in (m[k] as List)) Friend.fromJson(Map<String, dynamic>.from(x as Map))];
+            friends = fl('friends');
+            inReq = fl('inReq');
+            outReq = fl('outReq');
+            friendsLoaded = true;
+            break;
+          }
+        case 'fnote':
+          final fm = (m['m'] ?? '').toString();
+          if (fm.isNotEmpty) Push.toast(fm);
+          friendsRefresh();
+          break;
+        case 'finvite':
+          final fromN = (m['from'] ?? '').toString();
+          final fRoom = (m['room'] ?? '').toString();
+          if (fRoom.isNotEmpty) Push.toastAction('🎲 $fromN يدعوك للعب', 'انضم', () => join(fRoom));
           break;
         case 'vote_end':
           vote = null;

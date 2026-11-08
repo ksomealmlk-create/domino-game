@@ -26,6 +26,15 @@ class Push {
 
 
   /// رسالة قصيرة داخل اللعبة (ترحيب / إعلان من الإدارة).
+  static void toastAction(String t, String label, void Function() f) {
+    messenger.currentState?.showSnackBar(SnackBar(
+      content: Text(t),
+      duration: const Duration(seconds: 12),
+      behavior: SnackBarBehavior.floating,
+      action: SnackBarAction(label: label, onPressed: f),
+    ));
+  }
+
   static void toast(String t) {
     messenger.currentState?.showSnackBar(SnackBar(content: Text(t), duration: const Duration(seconds: 6), behavior: SnackBarBehavior.floating));
   }

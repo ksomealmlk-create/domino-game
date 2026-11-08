@@ -10,6 +10,7 @@ import '../../lib/core/view.dart';
 
 final Map<String, Room> rooms = {};
 final Set<Client> clients = {};
+final Map<int, Client> byPid = {}; // اللاعبون المتصلون حسب ID
 final Random _rnd = Random();
 
 class Seat {
@@ -29,6 +30,8 @@ class Client {
   Room? room;
   int seat = -1;
   int lastChat = 0, lastReq = 0;
+  int pid = 0; // رقم اللاعب العام (ID)
+  Set<int> friends = {};
   Client(this.ws);
 
   void send(Map<String, dynamic> m) {
@@ -107,6 +110,7 @@ class Room {
       s.client!.send({
         't': 'av',
         'list': [for (var r = 0; r < n; r++) seats[(p + r) % n]?.av],
+        'ids': [for (var r = 0; r < n; r++) seats[(p + r) % n]?.client?.pid ?? 0],
       });
     }
     for (final c in specs) {
@@ -117,6 +121,7 @@ class Room {
   void _specAv(Client c) => c.send({
         't': 'av',
         'list': [for (var r = 0; r < n; r++) seats[r]?.av],
+        'ids': [for (var r = 0; r < n; r++) seats[r]?.client?.pid ?? 0],
       });
 
   void start() {
@@ -604,6 +609,30 @@ void handle(Client c, Map<String, dynamic> m) {
         Admin.invite(c, r);
         break;
       }
+    case 'me':
+      {
+        final d = (m['did'] ?? '').toString();
+        if (!RegExp(r'^[A-Za-z0-9]{8,40}$').hasMatch(d)) return;
+        Admin.acct({'op': 'ensure', 'did': d, 'name': _name(m['name'])}).then((j) => _frSend(c, j));
+        break;
+      }
+    case 'fr':
+      _frOp(c, (m['op'] ?? '').toString(), (m['id'] as num?)?.toInt() ?? 0);
+      break;
+    case 'finvite':
+      {
+        final r = c.room;
+        final id = (m['id'] as num?)?.toInt() ?? 0;
+        if (r == null || c.seat < 0 || !c.friends.contains(id)) return;
+        final t = byPid[id];
+        if (t == null) {
+          c.send({'t': 'note', 'm': 'صديقك غير متصل الآن'});
+          return;
+        }
+        t.send({'t': 'finvite', 'from': c.name, 'room': r.code, 'live': r.started});
+        c.send({'t': 'note', 'm': 'تم إرسال الدعوة لصديقك ✅'});
+        break;
+      }
     case 'chat':
       c.room?.onChat(c, (m['m'] ?? '').toString());
       break;
@@ -659,6 +688,62 @@ String? _av(dynamic v) {
   return RegExp(r'^[A-Za-z0-9+/=]+$').hasMatch(s) ? s : null;
 }
 
+void _dropPid(Client c) {
+  if (c.pid != 0 && identical(byPid[c.pid], c)) byPid.remove(c.pid);
+}
+
+/// يرسل للاعب قائمة أصدقائه (مع حالة كل صديق: متصل / بغرفة).
+Future<void> _frSend(Client c, Map<String, dynamic>? j) async {
+  if (j == null) {
+    c.send({'t': 'note', 'm': 'خدمة الأصدقاء غير متاحة حالياً'});
+    return;
+  }
+  if (j['ok'] != true) {
+    const msgs = {
+      'notfound': 'ما لقيت لاعب بهذا الرقم',
+      'already': 'هو صديقك بالفعل',
+      'full': 'قائمة الأصدقاء ممتلئة',
+      'none': 'ما يوجد طلب',
+      'bad': 'رقم غير صحيح',
+    };
+    c.send({'t': 'note', 'm': msgs[(j['error'] ?? '').toString()] ?? 'تعذّر تنفيذ الطلب'});
+    return;
+  }
+  final me = Map<String, dynamic>.from(j['me'] as Map);
+  final first = c.pid == 0;
+  c.pid = (me['id'] as num).toInt();
+  byPid[c.pid] = c;
+  List<Map<String, dynamic>> ls(String k) => [for (final x in (j[k] as List)) Map<String, dynamic>.from(x as Map)];
+  final fr = ls('friends');
+  c.friends = {for (final f in fr) (f['id'] as num).toInt()};
+  for (final f in fr) {
+    final fc = byPid[(f['id'] as num).toInt()];
+    f['online'] = fc != null;
+    f['room'] = fc?.room?.code;
+    f['live'] = fc?.room?.started ?? false;
+  }
+  c.send({'t': 'fr', 'me': me, 'friends': fr, 'inReq': ls('inReq'), 'outReq': ls('outReq')});
+  final n = (j['notify'] as num?)?.toInt() ?? 0;
+  if (n > 0) {
+    final tc = byPid[n];
+    if (tc != null) {
+      final who = (j['name'] ?? '').toString();
+      tc.send({'t': 'fnote', 'm': j['ev'] == 'acc' ? '$who قبل طلب صداقتك 🤝' : '$who أرسل لك طلب صداقة'});
+    }
+  }
+  if (first) c.room?.sendAvatars(); // حتى تظهر الـ ID داخل الغرفة
+}
+
+Future<void> _frOp(Client c, String op, int other) async {
+  if (c.pid == 0) {
+    c.send({'t': 'note', 'm': 'انتظر شوي حتى يتم تسجيلك'});
+    return;
+  }
+  const ok = {'list', 'req', 'accept', 'reject', 'remove'};
+  if (!ok.contains(op)) return;
+  await _frSend(c, await Admin.acct({'op': op, 'id': c.pid, 'other': other}));
+}
+
 String _name(dynamic v) {
   final s = (v ?? '').toString().trim();
   if (s.isEmpty) return 'لاعب';
@@ -699,6 +784,8 @@ class Admin {
       return null;
     }
   }
+
+  static Future<Map<String, dynamic>?> acct(Map<String, dynamic> body) => _post('/api/domino/acct', body);
 
   /// يسمح للاعب بالدخول؟ (صيانة / حظر)
   static bool allow(Client c) {
@@ -833,9 +920,11 @@ Future<void> main() async {
           }
         }, onDone: () {
           clients.remove(c);
+          _dropPid(c);
           c.room?.onLeave(c);
         }, onError: (_) {
           clients.remove(c);
+          _dropPid(c);
           c.room?.onLeave(c);
         });
       } catch (_) {}
