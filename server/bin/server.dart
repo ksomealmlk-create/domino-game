@@ -62,6 +62,34 @@ class Room {
   final Map<Client, bool> votes = {};
   Timer? _voteT;
 
+  // ----- المكالمة الصوتية (WebRTC): السيرفر فقط يمرّر رسائل الاتصال بين اللاعبين -----
+  final Set<Client> voice = {};
+
+  void voiceJoin(Client c) {
+    if (!started || c.seat < 0 || c.seat >= n) return;
+    if (!voice.add(c)) return;
+    // الجديد يتصل بكل الموجودين (هو يرسل العرض، والباقي يردّون) حتى ما يتضارب الطرفان
+    c.send({'t': 'vpeers', 'list': [for (final x in voice) if (!identical(x, c)) x.seat]});
+  }
+
+  void voiceLeave(Client c, int seat) {
+    if (!voice.remove(c)) return;
+    for (final x in voice) {
+      x.send({'t': 'vgone', 's': seat});
+    }
+  }
+
+  void voiceRelay(Client c, Map<String, dynamic> m) {
+    if (!voice.contains(c)) return;
+    final to = (m['to'] as num?)?.toInt() ?? -1;
+    for (final x in voice) {
+      if (x.seat == to && !identical(x, c)) {
+        x.send({'t': 'rtc', 'from': c.seat, 'd': m['d']});
+        return;
+      }
+    }
+  }
+
   // ----- مهلة الدور -----
   static const int turnSecs = 30;
   Timer? _turnT;
@@ -288,6 +316,7 @@ class Room {
   }
 
   void onLeave(Client c) {
+    voiceLeave(c, c.seat);
     if (specs.remove(c)) {
       queue.remove(c);
       if (identical(reqFrom, c)) _endVote(false, silent: true);
@@ -500,6 +529,7 @@ class Room {
     }
     specs.clear();
     queue.clear();
+    voice.clear();
     reqFrom = null;
     _voteT?.cancel();
     _turnT?.cancel();
@@ -644,6 +674,15 @@ void handle(Client c, Map<String, dynamic> m) {
       }
     case 'chat':
       c.room?.onChat(c, (m['m'] ?? '').toString());
+      break;
+    case 'vjoin':
+      c.room?.voiceJoin(c);
+      break;
+    case 'vleave':
+      c.room?.voiceLeave(c, c.seat);
+      break;
+    case 'rtc':
+      c.room?.voiceRelay(c, m);
       break;
     case 'wantplay':
       c.room?.requestPlay(c);

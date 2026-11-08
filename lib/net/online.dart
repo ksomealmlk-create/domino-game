@@ -10,6 +10,7 @@ import '../core/settings.dart';
 import '../core/view.dart';
 import '../game/controller.dart';
 import '../push/push.dart';
+import 'voice.dart';
 
 enum OnlineStatus { idle, connecting, lobby, playing, error }
 
@@ -94,6 +95,30 @@ class OnlineController extends GameController {
   bool chatOpen = false;
   List<String> specNames = const [];
   VoteReq? vote;
+
+  // المكالمة الصوتية بين اللاعبين
+  VoiceChat? _voice;
+  bool get voiceOn => _voice?.joined ?? false;
+  bool get voiceBusy => _voice?.joining ?? false;
+  bool get micMuted => _voice?.muted ?? false;
+  int get voicePeers => _voice?.peers ?? 0;
+
+  /// أول ضغطة: يدخل المكالمة والمايك مفتوح. بعدها كل ضغطة تكتم/تفتح المايك.
+  Future<void> toggleVoice() async {
+    if (status != OnlineStatus.playing || spectating) {
+      Push.toast('المكالمة للاعبين فقط');
+      return;
+    }
+    final v = _voice ??= VoiceChat(send: _send, onChange: notifyListeners, deviceId: st.deviceId);
+    if (v.joined) {
+      v.toggleMute();
+    } else {
+      await v.join();
+    }
+  }
+
+  /// يخرج من المكالمة بالكامل (يقفل المايك)
+  void leaveVoice({bool notify = true}) => _voice?.leave(notify: notify);
 
   // الحساب والأصدقاء
   int myId = 0;
@@ -348,6 +373,11 @@ class OnlineController extends GameController {
             _setToast('💬 $nm: ${tx.length > 40 ? '${tx.substring(0, 40)}…' : tx}');
           }
           break;
+        case 'vpeers':
+        case 'rtc':
+        case 'vgone':
+          _voice?.onMsg(m);
+          break;
         case 'specs':
           specNames = [for (final x in (m['list'] as List)) x.toString()];
           break;
@@ -395,6 +425,7 @@ class OnlineController extends GameController {
           _vt?.cancel();
           break;
         case 'closed':
+          leaveVoice(notify: false);
           error = (m['m'] ?? 'انتهت الغرفة').toString();
           status = OnlineStatus.error;
           _view = null;
@@ -427,6 +458,7 @@ class OnlineController extends GameController {
   void _onDone(WebSocket w) {
     if (_closed || !identical(w, _ws)) return;
     _ws = null;
+    leaveVoice(notify: false);
     if (status != OnlineStatus.idle) {
       status = OnlineStatus.error;
       error ??= 'انقطع الاتصال بالسيرفر';
@@ -436,6 +468,7 @@ class OnlineController extends GameController {
 
   /// يخرج من الغرفة لكن يبقي الاتصال مفتوحًا حتى تظهر قائمة الغرف.
   void reset() {
+    leaveVoice(notify: false);
     _send({'t': 'leave'});
     lobby = null;
     _view = null;
@@ -461,6 +494,7 @@ class OnlineController extends GameController {
   void next() => _send({'t': 'next'});
   @override
   void leave() {
+    leaveVoice(notify: false);
     _send({'t': 'leave'});
     _ws?.close();
     _ws = null;

@@ -34,6 +34,11 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
       - name: Generate Android project
         run: flutter create . --project-name domino3d --org com.ksomealmlk --platforms=android
+      - name: minSdk 23 (needed by WebRTC)
+        run: |
+          G=$(ls android/app/build.gradle.kts android/app/build.gradle 2>/dev/null | head -1)
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = maxOf(flutter.minSdkVersion, 23)/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion Math.max(flutter.minSdkVersion, 23)/' "$G"
+          grep -n "minSdk" "$G"
       - name: Speed up Gradle
         run: |
           cat >> android/gradle.properties <<'P'
@@ -47,7 +52,7 @@ jobs:
       - name: Android permissions (internet, vibrate, ws://)
         run: |
           M=android/app/src/main/AndroidManifest.xml
-          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application android:usesCleartextTraffic="true"#' $M
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>\n    <application android:usesCleartextTraffic="true"#' $M
           sed -i 's#android:label="domino3d"#android:label="Iraqe Domeno"#' $M
       - name: High-importance notification channel (pop-up invites)
         run: |
@@ -77,24 +82,43 @@ jobs:
       - run: flutter pub get
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons
-      - name: Use fixed signing key (so updates install over the old app)
+      - name: Use fixed signing key (same key on every build)
         run: |
-          mkdir -p ~/.android
+          mkdir -p ~/.android ~/.gradle/init.d
           cp signing/debug.keystore ~/.android/debug.keystore
+          cat > ~/.gradle/init.d/fixed-signing.gradle <<'G'
+          allprojects { p ->
+            p.afterEvaluate {
+              if (p.plugins.hasPlugin('com.android.application')) {
+                p.android {
+                  signingConfigs {
+                    create('fixed') {
+                      storeFile new File(System.getenv('FIXED_KS'))
+                      storePassword 'android'
+                      keyAlias 'androiddebugkey'
+                      keyPassword 'android'
+                    }
+                  }
+                  buildTypes {
+                    release { signingConfig signingConfigs.getByName('fixed') }
+                  }
+                }
+              }
+            }
+          }
+          G
+          echo "FIXED_KS=$GITHUB_WORKSPACE/signing/debug.keystore" >> $GITHUB_ENV
       - name: Build release APK (arm64 only = much faster)
         run: flutter build apk --release --target-platform android-arm64 --build-number=${{ github.run_number }}
       - name: Print APK signing certificate (to match Google sign-in setup)
         run: |
-          keytool -printcert -jarfile build/app/outputs/flutter-apk/app-release.apk | grep -E "SHA1|Owner" || true
-          AAPT=$(ls -d $ANDROID_HOME/build-tools/*/aapt 2>/dev/null | tail -1)
-          [ -n "$AAPT" ] && $AAPT dump badging build/app/outputs/flutter-apk/app-release.apk | head -1 || true
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          AS=$(ls -d $ANDROID_HOME/build-tools/*/apksigner 2>/dev/null | tail -1)
+          echo "== APKSIGNER: $AS"
+          "$AS" verify --print-certs "$APK" | grep -i -E "SHA-1|SHA-256|Signer" || true
+          echo "== Expected SHA-1 in Firebase: c37c9301136bdfbb2ce5bd71d142fbe603de8fcd"
       - uses: actions/upload-artifact@v4
         with:
           name: domino3d-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           compression-level: 0
-
-      - name: Print APK signature (apksigner)
-        run: |
-          AS=$(ls -d $ANDROID_HOME/build-tools/*/apksigner | tail -1)
-          "$AS" verify --print-certs build/app/outputs/flutter-apk/app-release.apk | grep -i -E "SHA-1|SHA-256"

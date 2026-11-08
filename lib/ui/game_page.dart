@@ -223,6 +223,7 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
               ],
             ),
           ),
+          if (oc != null && !v.spectator) _micBtn(oc),
           if (oc != null) _chatBtn(oc),
           if (oc != null && !v.spectator)
             IconButton(
@@ -578,6 +579,25 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
           Text('$who · $left', style: TextStyle(fontWeight: FontWeight.w800, color: col)),
         ],
       ),
+    );
+  }
+
+  // ---------- المكالمة الصوتية ----------
+  Widget _micBtn(OnlineController oc) {
+    final on = oc.voiceOn;
+    final muted = oc.micMuted;
+    return IconButton(
+      tooltip: on ? (muted ? 'افتح المايك' : 'اكتم المايك') : 'مكالمة صوتية',
+      visualDensity: VisualDensity.compact,
+      onPressed: oc.voiceBusy ? null : oc.toggleVoice,
+      onLongPress: on ? oc.leaveVoice : null,
+      icon: oc.voiceBusy
+          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: kGoldLight))
+          : Icon(
+              !on ? Icons.mic_none_rounded : (muted ? Icons.mic_off_rounded : Icons.mic_rounded),
+              color: !on ? kGoldLight : (muted ? Colors.redAccent : Colors.greenAccent),
+              size: 26,
+            ),
     );
   }
 
