@@ -83,6 +83,11 @@ jobs:
           cp signing/debug.keystore ~/.android/debug.keystore
       - name: Build release APK (arm64 only = much faster)
         run: flutter build apk --release --target-platform android-arm64 --build-number=${{ github.run_number }}
+      - name: Print APK signing certificate (to match Google sign-in setup)
+        run: |
+          keytool -printcert -jarfile build/app/outputs/flutter-apk/app-release.apk | grep -E "SHA1|Owner" || true
+          AAPT=$(ls -d $ANDROID_HOME/build-tools/*/aapt 2>/dev/null | tail -1)
+          [ -n "$AAPT" ] && $AAPT dump badging build/app/outputs/flutter-apk/app-release.apk | head -1 || true
       - uses: actions/upload-artifact@v4
         with:
           name: domino3d-apk

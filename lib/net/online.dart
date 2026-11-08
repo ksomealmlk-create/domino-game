@@ -275,7 +275,17 @@ class OnlineController extends GameController {
       Push.toast('جاري التحقق من حسابك…');
       _send({'t': 'gauth', 'tok': t});
     } on PlatformException catch (e) {
-      Push.toast('تعذّر تسجيل الدخول بجوجل (${e.code})');
+      final api = RegExp(r'ApiException: (\d+)').firstMatch('${e.message}')?.group(1);
+      String hint = '';
+      if (api == '10') {
+        hint = ' — خطأ إعدادات: البصمة أو اسم الحزمة غير مطابق';
+      } else if (api == '12500') {
+        hint = ' — إعدادات جوجل غير مكتملة';
+      } else if (api == '7' || api == '8') {
+        hint = ' — مشكلة اتصال بخدمات جوجل';
+      }
+      final raw = '${e.message ?? ''}';
+      Push.toast('تعذّر الدخول بجوجل [${e.code}] ${api != null ? '($api)' : (raw.length > 90 ? raw.substring(0, 90) : raw)}$hint');
     } catch (_) {
       Push.toast('تعذّر تسجيل الدخول بجوجل');
     }
