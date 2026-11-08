@@ -29,18 +29,24 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
   late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
   int? _pending;
   bool _paused = false, _showOver = false, _wasOver = false, _ready = false;
-  Timer? _ot;
+  Timer? _ot, _tick;
 
   @override
   void initState() {
     super.initState();
     _wasOver = widget.ctrl.view?.over ?? false;
     widget.ctrl.addListener(_onCtrl);
+    // عدّاد دور اللاعب: يحدّث الشاشة كل ثانية
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      final oc = _oc;
+      if (mounted && oc != null && oc.turnEnd != null) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     widget.ctrl.removeListener(_onCtrl);
+    _tick?.cancel();
     _ot?.cancel();
     _pulse.dispose();
     super.dispose();
@@ -170,6 +176,12 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                               ),
                             ),
                           ),
+                        ),
+                        Positioned(
+                          bottom: 6,
+                          left: 0,
+                          right: 0,
+                          child: IgnorePointer(child: Center(child: _timerChip(v))),
                         ),
                       ],
                     ),
@@ -488,6 +500,33 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- عدّاد الدور ----------
+  Widget _timerChip(GameView v) {
+    final oc = _oc;
+    final left = oc?.turnLeft ?? 0;
+    if (oc == null || left <= 0 || v.over) return const SizedBox.shrink();
+    final mine = !v.spectator && v.turn == 0;
+    final low = left <= 10;
+    final col = low ? const Color(0xFFFF6B6B) : kGoldLight;
+    final who = mine ? 'دورك' : v.names[v.turn];
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: alpha(Colors.black, 0.7),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: low ? col : alpha(kGold, 0.7)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.timer_outlined, size: 16, color: col),
+          const SizedBox(width: 6),
+          Text('$who · $left', style: TextStyle(fontWeight: FontWeight.w800, color: col)),
         ],
       ),
     );

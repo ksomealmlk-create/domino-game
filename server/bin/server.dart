@@ -58,6 +58,11 @@ class Room {
   final Map<Client, bool> votes = {};
   Timer? _voteT;
 
+  // ----- مهلة الدور -----
+  static const int turnSecs = 30;
+  Timer? _turnT;
+  DateTime? _turnEnd;
+
   Room(this.code, this.five, this.n, this.target, {this.quick = false}) : seats = List<Seat?>.filled(n, null);
 
   List<String> get names => [for (final s in seats) s?.name ?? '-'];
@@ -151,7 +156,10 @@ class Room {
   void _afterAction() {
     final g = game!;
     _botT?.cancel();
+    _turnT?.cancel();
     if (g.over) {
+      _turnEnd = null;
+      _sendTurn(0);
       if (g.matchOver && !_endRep) {
         _endRep = true;
         Admin.ended(this, g);
@@ -168,8 +176,40 @@ class Room {
       return;
     }
     if (seats[g.turn]!.bot) {
+      _turnEnd = null;
+      _sendTurn(0);
       _botT = Timer(const Duration(milliseconds: 1100), _botStep);
+    } else {
+      // لاعب حقيقي: عنده 30 ثانية، وبعدها يُلعب عنه حجر عشوائي ويروح الدور للي بعده
+      _turnEnd = DateTime.now().add(const Duration(seconds: turnSecs));
+      _sendTurn(turnSecs);
+      _turnT = Timer(const Duration(seconds: turnSecs), _autoMove);
     }
+  }
+
+  void _sendTurn(int s) => _everyone({'t': 'tt', 's': s});
+
+  /// انتهت مهلة اللاعب: يسحب إذا ما عنده حركة، ثم يلعب حجرًا عشوائيًا (أو يتخطى) وينتقل الدور.
+  void _autoMove() {
+    final g = game;
+    if (g == null || g.over) return;
+    final p = g.turn;
+    final s = seats[p];
+    if (s == null || s.bot || s.client == null) return;
+    final name = s.name;
+    while (!g.canPlay(p) && g.stock.isNotEmpty) {
+      g.draw(p);
+    }
+    final ms = g.allMoves(p);
+    if (ms.isNotEmpty) {
+      final mv = ms[_rnd.nextInt(ms.length)];
+      final r = g.play(p, mv.i, mv.side);
+      broadcast(last: LastMove.from(r), msg: '$name انتهى وقته — لُعب عنه تلقائيًا${r.gained > 0 ? '  +${r.gained}' : ''}');
+    } else {
+      g.pass(p);
+      broadcast(msg: '$name انتهى وقته — تخطّى الدور');
+    }
+    _afterAction();
   }
 
   void _botStep() {
@@ -327,6 +367,11 @@ class Room {
     if (g != null) {
       c.send({'t': 'state', ...GameView.fromGame(g, 0, names, spectator: true).toJson()});
     }
+    final te = _turnEnd;
+    if (g != null && !g.over && te != null) {
+      final left = te.difference(DateTime.now()).inSeconds;
+      if (left > 0) c.send({'t': 'tt', 's': left});
+    }
     c.send({'t': 'note', 'm': 'أنت تشاهد المباراة 👁 — تقدر تطلب تلعب من زر (أريد ألعب)'});
     sendSpecs();
     return true;
@@ -451,6 +496,7 @@ class Room {
     queue.clear();
     reqFrom = null;
     _voteT?.cancel();
+    _turnT?.cancel();
     _botT?.cancel();
     _fillT?.cancel();
     _nextT?.cancel();

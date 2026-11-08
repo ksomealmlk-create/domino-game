@@ -76,6 +76,15 @@ class OnlineController extends GameController {
   List<String> specNames = const [];
   VoteReq? vote;
 
+  /// وقت انتهاء دور اللاعب الحالي (null = لا يوجد مؤقت)
+  DateTime? turnEnd;
+  int get turnLeft {
+    final e = turnEnd;
+    if (e == null) return 0;
+    final ms = e.difference(DateTime.now()).inMilliseconds;
+    return ms <= 0 ? 0 : (ms / 1000).ceil();
+  }
+
   @override
   GameView? get view => _view;
   @override
@@ -119,6 +128,7 @@ class OnlineController extends GameController {
     unread = 0;
     specNames = const [];
     vote = null;
+    turnEnd = null;
     status = OnlineStatus.connecting;
     notifyListeners();
     final ok = await _open();
@@ -282,6 +292,10 @@ class OnlineController extends GameController {
             notifyListeners();
           });
           break;
+        case 'tt':
+          final secs = (m['s'] as num?)?.toInt() ?? 0;
+          turnEnd = secs > 0 ? DateTime.now().add(Duration(seconds: secs)) : null;
+          break;
         case 'vote_end':
           vote = null;
           _vt?.cancel();
@@ -292,6 +306,7 @@ class OnlineController extends GameController {
           _view = null;
           lobby = null;
           vote = null;
+          turnEnd = null;
           break;
         case 'note':
           final nt = m['m'];
@@ -335,6 +350,7 @@ class OnlineController extends GameController {
     unread = 0;
     specNames = const [];
     vote = null;
+    turnEnd = null;
     status = OnlineStatus.idle;
     error = null;
     notifyListeners();
