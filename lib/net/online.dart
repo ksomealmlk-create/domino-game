@@ -20,6 +20,38 @@ class LobbyInfo {
   const LobbyInfo(this.code, this.n, this.five, this.players, this.host, this.quick);
 }
 
+/// غرفة من قائمة الغرف النشطة
+class RoomInfo {
+  final String code;
+  final int n, bots, specs;
+  final bool started, quick;
+  final List<String> players;
+  const RoomInfo(this.code, this.n, this.bots, this.specs, this.started, this.quick, this.players);
+
+  factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
+        j['code'].toString(),
+        (j['n'] as num?)?.toInt() ?? 4,
+        (j['bots'] as num?)?.toInt() ?? 0,
+        (j['specs'] as num?)?.toInt() ?? 0,
+        j['started'] == true,
+        j['quick'] == true,
+        [for (final x in (j['players'] as List? ?? const [])) x.toString()],
+      );
+}
+
+class ChatMsg {
+  final String name, text;
+  final bool mine, spec;
+  const ChatMsg(this.name, this.text, this.mine, this.spec);
+}
+
+/// مشاهد يطلب يلعب، ينتظر موافقة كل اللاعبين
+class VoteReq {
+  final String name;
+  final int secs;
+  const VoteReq(this.name, this.secs);
+}
+
 class OnlineController extends GameController {
   final Settings st;
   OnlineController(this.st);
@@ -30,9 +62,19 @@ class OnlineController extends GameController {
   LobbyInfo? lobby;
   GameView? _view;
   String? _toast;
-  Timer? _tt;
+  Timer? _tt, _vt;
   bool _closed = false;
   bool _inviteAfter = false;
+  bool _browsing = false;
+
+  // قائمة الغرف، الدردشة، المشاهدون، التصويت
+  List<RoomInfo> rooms = const [];
+  bool roomsLoaded = false;
+  final List<ChatMsg> chat = [];
+  int unread = 0;
+  bool chatOpen = false;
+  List<String> specNames = const [];
+  VoteReq? vote;
 
   @override
   GameView? get view => _view;
@@ -44,34 +86,71 @@ class OnlineController extends GameController {
   @override
   bool get isOnline => true;
 
+  bool get spectating => status == OnlineStatus.playing && (_view?.spectator ?? false);
+
+  /// يفتح الاتصال (أو يستعمل المفتوح). السيرفر المجاني ينام ويحتاج وقت ليصحى، لذلك نعيد المحاولة.
+  Future<bool> _open() async {
+    if (_ws != null) return true;
+    var url = st.server.trim();
+    if (!url.startsWith('ws')) url = 'wss://$url';
+    WebSocket? ws;
+    for (var i = 0; i < 4 && ws == null && !_closed; i++) {
+      try {
+        ws = await WebSocket.connect(url).timeout(const Duration(seconds: 25));
+      } catch (_) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+    if (ws == null) return false;
+    final w = ws;
+    if (_closed) {
+      w.close();
+      return false;
+    }
+    _ws = w;
+    w.pingInterval = const Duration(seconds: 20);
+    w.listen(_onData, onDone: () => _onDone(w), onError: (_) => _onDone(w));
+    return true;
+  }
+
   Future<void> _connect(Map<String, dynamic> first) async {
     error = null;
+    chat.clear();
+    unread = 0;
+    specNames = const [];
+    vote = null;
     status = OnlineStatus.connecting;
     notifyListeners();
-    try {
-      await _ws?.close();
-      var url = st.server.trim();
-      if (!url.startsWith('ws')) url = 'wss://$url';
-      Object? lastErr;
-      WebSocket? ws;
-      // السيرفر المجاني ينام عند الخمول ويحتاج حوالي دقيقة ليصحى، لذلك نعيد المحاولة.
-      for (var i = 0; i < 4 && ws == null; i++) {
-        try {
-          ws = await WebSocket.connect(url).timeout(const Duration(seconds: 25));
-        } catch (e) {
-          lastErr = e;
-          await Future.delayed(const Duration(seconds: 2));
-        }
-      }
-      if (ws == null) throw lastErr ?? 'connect failed';
-      _ws = ws;
-      _ws!.pingInterval = const Duration(seconds: 20);
-      _ws!.listen(_onData, onDone: _onDone, onError: (_) => _onDone());
-      _send(first);
-    } catch (e) {
+    final ok = await _open();
+    if (_closed) return;
+    if (!ok) {
       status = OnlineStatus.error;
       error = 'تعذّر الاتصال بالسيرفر. تأكد من الإنترنت وجرّب مرة ثانية.';
       notifyListeners();
+      return;
+    }
+    _send(first);
+  }
+
+  /// يتصل بالسيرفر وهو بالقائمة الرئيسية حتى يعرض الغرف النشطة.
+  Future<void> browse() async {
+    if (_closed || _browsing) return;
+    if (_ws != null) {
+      refreshRooms();
+      return;
+    }
+    _browsing = true;
+    final ok = await _open();
+    _browsing = false;
+    if (ok) refreshRooms();
+  }
+
+  void refreshRooms() {
+    if (_closed) return;
+    if (_ws != null) {
+      _send({'t': 'rooms'});
+    } else if (!_browsing && (status == OnlineStatus.idle || status == OnlineStatus.error)) {
+      browse();
     }
   }
 
@@ -100,8 +179,10 @@ class OnlineController extends GameController {
     return _connect({'t': 'create', ..._cfg()});
   }
 
-  /// يبلّغ كل اللاعبين بغرفتك (إشعار ينقلهم مباشرة لها)
+  /// يبلّغ كل اللاعبين بغرفتك (إشعار ينقلهم مباشرة لها) — يشتغل بالانتظار وأثناء اللعب
   void invite() => _send({'t': 'invite'});
+
+  /// ينضم للغرفة. إذا كانت تلعب الآن يدخل مشاهدًا.
   Future<void> join(String code) => _connect({'t': 'join', 'code': _normCode(code), 'name': st.displayName, 'did': st.deviceId, if (st.avatarB64.isNotEmpty) 'av': st.avatarB64});
 
   static String _normCode(String v) {
@@ -117,7 +198,35 @@ class OnlineController extends GameController {
     }
     return b.toString();
   }
+
   void startNow() => _send({'t': 'start'});
+
+  // ----- دردشة / مشاهدة / تصويت -----
+  void sendChat(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    _send({'t': 'chat', 'm': t});
+  }
+
+  void openChat() {
+    chatOpen = true;
+    unread = 0;
+    notifyListeners();
+  }
+
+  void closeChat() {
+    chatOpen = false;
+  }
+
+  /// مشاهد: أريد ألعب من الجولة القادمة (يحتاج موافقة كل اللاعبين)
+  void wantPlay() => _send({'t': 'wantplay'});
+
+  void answerVote(bool ok) {
+    _send({'t': 'vote', 'ok': ok});
+    vote = null;
+    _vt?.cancel();
+    notifyListeners();
+  }
 
   void _onData(dynamic raw) {
     if (_closed) return;
@@ -146,6 +255,44 @@ class OnlineController extends GameController {
               if (x == null) null else base64Decode(x as String)
           ];
           break;
+        case 'rooms':
+          rooms = [for (final x in (m['list'] as List)) RoomInfo.fromJson(Map<String, dynamic>.from(x as Map))];
+          roomsLoaded = true;
+          break;
+        case 'chat':
+          final mine = m['mine'] == true;
+          final nm = (m['n'] ?? '').toString();
+          final tx = (m['m'] ?? '').toString();
+          chat.add(ChatMsg(nm, tx, mine, m['sp'] == true));
+          if (chat.length > 80) chat.removeAt(0);
+          if (!mine && !chatOpen) {
+            unread++;
+            _setToast('💬 $nm: ${tx.length > 40 ? '${tx.substring(0, 40)}…' : tx}');
+          }
+          break;
+        case 'specs':
+          specNames = [for (final x in (m['list'] as List)) x.toString()];
+          break;
+        case 'vote':
+          final secs = (m['secs'] as num?)?.toInt() ?? 20;
+          vote = VoteReq((m['name'] ?? '').toString(), secs);
+          _vt?.cancel();
+          _vt = Timer(Duration(seconds: secs + 1), () {
+            vote = null;
+            notifyListeners();
+          });
+          break;
+        case 'vote_end':
+          vote = null;
+          _vt?.cancel();
+          break;
+        case 'closed':
+          error = (m['m'] ?? 'انتهت الغرفة').toString();
+          status = OnlineStatus.error;
+          _view = null;
+          lobby = null;
+          vote = null;
+          break;
         case 'note':
           final nt = m['m'];
           if (nt is String && nt.isNotEmpty) Push.toast(nt);
@@ -168,25 +315,30 @@ class OnlineController extends GameController {
     });
   }
 
-  void _onDone() {
-    if (_closed) return;
+  void _onDone(WebSocket w) {
+    if (_closed || !identical(w, _ws)) return;
+    _ws = null;
     if (status != OnlineStatus.idle) {
       status = OnlineStatus.error;
-      error = 'انقطع الاتصال بالسيرفر';
-      notifyListeners();
+      error ??= 'انقطع الاتصال بالسيرفر';
     }
+    notifyListeners();
   }
 
+  /// يخرج من الغرفة لكن يبقي الاتصال مفتوحًا حتى تظهر قائمة الغرف.
   void reset() {
     _send({'t': 'leave'});
-    _ws?.close();
-    _ws = null;
     lobby = null;
     _view = null;
     _avatars = const [];
+    chat.clear();
+    unread = 0;
+    specNames = const [];
+    vote = null;
     status = OnlineStatus.idle;
     error = null;
     notifyListeners();
+    refreshRooms();
   }
 
   @override
@@ -208,6 +360,7 @@ class OnlineController extends GameController {
   void dispose() {
     _closed = true;
     _tt?.cancel();
+    _vt?.cancel();
     leave();
     super.dispose();
   }

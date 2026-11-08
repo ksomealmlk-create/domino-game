@@ -24,6 +24,9 @@ class GameView {
   final LastMove? last;
   final String? msg;
 
+  /// مشاهد (لا يرى أيدي اللاعبين ولا يلعب)
+  final bool spectator;
+
   /// هل اللاعب (بالمقعد النسبي r) بنفس فريقي؟ (0 = أنا). في 4 لاعبين الشريك هو المقابل (2).
   bool sameTeam(int r) => n == 4 ? r % 2 == 0 : r == 0;
   bool get iAmWinnerTeam => sameTeam(matchOver ? matchWinner : roundWinner);
@@ -52,9 +55,10 @@ class GameView {
     required this.blocked,
     this.last,
     this.msg,
+    this.spectator = false,
   });
 
-  static GameView fromGame(DominoGame g, int viewer, List<String> names, {LastMove? last, String? msg}) {
+  static GameView fromGame(DominoGame g, int viewer, List<String> names, {LastMove? last, String? msg, bool spectator = false}) {
     final n = g.n;
     int ab(int r) => (viewer + r) % n;
     int rel(int p) => p < 0 ? -1 : (p - viewer + n) % n;
@@ -67,7 +71,7 @@ class GameView {
       scores: [for (var r = 0; r < n; r++) g.scores[ab(r)]],
       handSizes: [for (var r = 0; r < n; r++) g.hands[ab(r)].length],
       pipsLeft: g.over ? [for (var r = 0; r < n; r++) pipsOf(g.hands[ab(r)])] : const [],
-      myHand: List<Tile>.of(g.hands[viewer]),
+      myHand: spectator ? <Tile>[] : List<Tile>.of(g.hands[viewer]),
       chain: List<Tile>.of(g.chain),
       stock: g.stock.length,
       nl: g.nl,
@@ -80,6 +84,7 @@ class GameView {
       blocked: g.blocked,
       last: last == null ? null : LastMove(rel(last.p), last.a, last.b, last.side, last.gained),
       msg: msg,
+      spectator: spectator,
     );
   }
 
@@ -105,6 +110,7 @@ class GameView {
         'blocked': blocked,
         'last': last?.toJson(),
         'msg': msg,
+        'spec': spectator,
       };
 
   static GameView fromJson(Map<String, dynamic> j) => GameView(
@@ -129,5 +135,6 @@ class GameView {
         blocked: j['blocked'] as bool,
         last: j['last'] == null ? null : LastMove.fromJson(Map<String, dynamic>.from(j['last'] as Map)),
         msg: j['msg'] as String?,
+        spectator: j['spec'] == true,
       );
 }

@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../core/settings.dart';
 import '../net/online.dart';
 import '../net/presence.dart';
 import '../push/push.dart';
+import 'chat_sheet.dart';
 import 'game_page.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -20,6 +22,7 @@ class OnlinePage extends StatefulWidget {
 class _OnlinePageState extends State<OnlinePage> {
   late final OnlineController ctrl = OnlineController(widget.st);
   final _code = TextEditingController();
+  Timer? _rt;
 
   @override
   void initState() {
@@ -29,7 +32,12 @@ class _OnlinePageState extends State<OnlinePage> {
     final aj = widget.autoJoin;
     if (aj != null && aj.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.join(aj));
+    } else {
+      ctrl.browse();
     }
+    _rt = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (ctrl.status == OnlineStatus.idle || ctrl.status == OnlineStatus.error) ctrl.refreshRooms();
+    });
     ctrl.addListener(() {
       if (mounted) setState(() {});
     });
@@ -38,6 +46,7 @@ class _OnlinePageState extends State<OnlinePage> {
   @override
   void dispose() {
     Push.online--;
+    _rt?.cancel();
     _code.dispose();
     ctrl.dispose();
     super.dispose();
@@ -78,6 +87,8 @@ class _OnlinePageState extends State<OnlinePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _rooms(busy),
+        const SizedBox(height: 16),
         Panel(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -133,6 +144,64 @@ class _OnlinePageState extends State<OnlinePage> {
     );
   }
 
+  Widget _rooms(bool busy) {
+    final rs = ctrl.rooms;
+    return Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: Text('غرف تلعب الآن', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: kGoldLight))),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                onPressed: ctrl.refreshRooms,
+                icon: const Icon(Icons.refresh_rounded, color: kGoldLight),
+              ),
+            ],
+          ),
+          if (!ctrl.roomsLoaded)
+            const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('جاري تحميل الغرف…', style: TextStyle(color: Colors.white54)))
+          else if (rs.isEmpty)
+            const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('ماكو غرف حالياً — كوّن غرفتك وبلّغ الأصدقاء', style: TextStyle(color: Colors.white54)))
+          else
+            for (final r in rs.take(12)) _roomTile(r, busy),
+        ],
+      ),
+    );
+  }
+
+  Widget _roomTile(RoomInfo r, bool busy) {
+    final names = r.players.isEmpty ? '—' : r.players.join('، ');
+    final state = r.started ? 'جارية' : 'بالانتظار';
+    final eye = r.specs > 0 ? ' · 👁 ${r.specs}' : '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(r.started ? Icons.sports_esports_rounded : Icons.hourglass_top_rounded, color: r.started ? kGold : Colors.white38),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(names, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text('$state · غرفة ${r.code}$eye', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              ],
+            ),
+          ),
+          GoldButton(
+            r.started ? 'مشاهدة' : 'انضمام',
+            ghost: r.started,
+            fontSize: 14,
+            pad: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+            onTap: busy ? null : () => ctrl.join(r.code),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _lobby(LobbyInfo l) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -167,6 +236,8 @@ class _OnlinePageState extends State<OnlinePage> {
         if (l.host && !l.quick) GoldButton(Presence.t('invBtn', 'إبلاغ العرف الأصليون'), ghost: true, icon: Icons.campaign_rounded, onTap: ctrl.invite),
         if (l.host && !l.quick) const SizedBox(height: 10),
         if (l.host && !l.quick) GoldButton('ابدأ الآن (البقية بوتات)', icon: Icons.play_arrow_rounded, onTap: ctrl.startNow),
+        const SizedBox(height: 10),
+        GoldButton(ctrl.unread > 0 ? 'الدردشة (${ctrl.unread})' : 'الدردشة', ghost: true, icon: Icons.chat_bubble_outline_rounded, onTap: () => showChat(context, ctrl)),
         const SizedBox(height: 10),
         GoldButton('خروج', ghost: true, onTap: ctrl.reset),
       ],

@@ -8,6 +8,8 @@ import '../core/rules.dart';
 import '../core/settings.dart';
 import '../core/view.dart';
 import '../game/controller.dart';
+import '../net/online.dart';
+import 'chat_sheet.dart';
 import 'table_scene.dart';
 import 'avatar_widget.dart';
 import 'theme.dart';
@@ -73,13 +75,15 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
     if (mounted) setState(() {});
   }
 
+  OnlineController? get _oc => widget.ctrl is OnlineController ? widget.ctrl as OnlineController : null;
+
   void _exit() {
     widget.ctrl.leave();
     Navigator.of(context).pop();
   }
 
   void _tapTile(GameView v, int i) {
-    if (v.turn != 0 || v.over) return;
+    if (v.spectator || v.turn != 0 || v.over) return;
     final t = v.myHand[i];
     final sides = sidesFor(t, v.chain);
     if (sides.isEmpty) return;
@@ -171,12 +175,13 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                     ),
                   ),
                   _statusBar(v),
-                  _hand(v, ts),
+                  v.spectator ? _specBar(v) : _hand(v, ts),
                 ],
               ),
             ),
             if (_showOver && v.over) _roundOver(v),
             if (_paused) _pauseMenu(),
+            if (_oc?.vote != null) _voteBox(_oc!.vote!),
           ],
         ),
       ),
@@ -187,6 +192,8 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
   Widget _topBar(GameView v) {
     final mode = v.n == 4 ? 'فريقين' : '151';
     final goal = '${v.target} نقطة';
+    final oc = _oc;
+    final eye = (oc != null && oc.specNames.isNotEmpty) ? ' · 👁 ${oc.specNames.length}' : '';
     return Padding(
       padding: const EdgeInsets.fromLTRB(6, 2, 6, 0),
       child: Row(
@@ -196,15 +203,24 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
             child: Column(
               children: [
                 Text('دومينو · $mode', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: kGoldLight)),
-                Text('الجولة ${v.round} · الهدف $goal${widget.ctrl.isOnline ? ' · أونلاين' : ''}',
+                Text('الجولة ${v.round} · الهدف $goal${widget.ctrl.isOnline ? ' · أونلاين' : ''}$eye',
                     style: const TextStyle(fontSize: 11, color: Colors.white54)),
                 if (v.n == 4)
-                  Text('نحن ★ ${v.ourScore}   ·   هم ★ ${v.theirScore}',
+                  Text(v.spectator ? 'الأول ★ ${v.ourScore}   ·   الثاني ★ ${v.theirScore}' : 'نحن ★ ${v.ourScore}   ·   هم ★ ${v.theirScore}',
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: kGold)),
               ],
             ),
           ),
+          if (oc != null) _chatBtn(oc),
+          if (oc != null && !v.spectator)
+            IconButton(
+              tooltip: 'إبلاغ اللاعبين',
+              visualDensity: VisualDensity.compact,
+              onPressed: oc.invite,
+              icon: const Icon(Icons.campaign_rounded, color: kGoldLight, size: 26),
+            ),
           IconButton(
+            visualDensity: VisualDensity.compact,
             onPressed: () {
               widget.st.update(() => widget.st.sound = !widget.st.sound);
               Sfx.i.enabled = widget.st.sound;
@@ -283,6 +299,8 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
     Widget mid;
     if (v.over) {
       mid = const SizedBox.shrink();
+    } else if (v.spectator) {
+      mid = Text('${v.names[v.turn]} يلعب…', style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w700));
     } else if (v.turn == 0) {
       if (can) {
         mid = AnimatedBuilder(
@@ -405,9 +423,9 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
   // ---------- نهاية الجولة ----------
   Widget _roundOver(GameView v) {
     final w = v.matchOver ? v.matchWinner : v.roundWinner;
-    final iWon = v.iAmWinnerTeam;
+    final iWon = !v.spectator && v.iAmWinnerTeam;
     final team = v.n == 4;
-    final winName = team ? 'الفريق الآخر' : v.names[w];
+    final winName = team ? (v.spectator ? '${v.names[w]} + ${v.names[(w + 2) % 4]}' : 'الفريق الآخر') : v.names[w];
     final title = v.matchOver
         ? (iWon ? (team ? '🏆 فريقكم فاز باللعبة!' : '🏆 فزت باللعبة!') : 'فاز $winName باللعبة')
         : (iWon ? (team ? '🎉 فريقكم فاز بالجولة!' : '🎉 فزت بالجولة!') : 'فاز $winName بالجولة');
@@ -433,8 +451,8 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                     Text('$detail  ·  +${v.roundGain}', style: const TextStyle(color: Colors.white70)),
                     const SizedBox(height: 14),
                     if (team) ...[
-                      _teamRow('فريقكم', '${v.names[0]} + ${v.names[2]}', v.ourScore, v.sameTeam(w), v.pipsLeft.length > 3 ? v.pipsLeft[0] + v.pipsLeft[2] : null),
-                      _teamRow('الفريق الآخر', '${v.names[1]} + ${v.names[3]}', v.theirScore, !v.sameTeam(w), v.pipsLeft.length > 3 ? v.pipsLeft[1] + v.pipsLeft[3] : null),
+                      _teamRow(v.spectator ? 'الفريق الأول' : 'فريقكم', '${v.names[0]} + ${v.names[2]}', v.ourScore, v.sameTeam(w), v.pipsLeft.length > 3 ? v.pipsLeft[0] + v.pipsLeft[2] : null),
+                      _teamRow(v.spectator ? 'الفريق الثاني' : 'الفريق الآخر', '${v.names[1]} + ${v.names[3]}', v.theirScore, !v.sameTeam(w), v.pipsLeft.length > 3 ? v.pipsLeft[1] + v.pipsLeft[3] : null),
                     ] else
                       for (var p = 0; p < v.n; p++)
                         Padding(
@@ -450,7 +468,10 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                           ),
                         ),
                     const SizedBox(height: 16),
-                    GoldButton(
+                    if (v.spectator)
+                      const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('بانتظار الجولة القادمة…', style: TextStyle(color: Colors.white70)))
+                    else
+                      GoldButton(
                       online && _ready ? 'بانتظار الباقين…' : (online && !v.matchOver ? 'جاهز' : btn),
                       icon: Icons.play_arrow_rounded,
                       onTap: online && _ready
@@ -468,6 +489,75 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ---------- المشاهدة / الدردشة / التصويت ----------
+  Widget _chatBtn(OnlineController oc) => IconButton(
+        visualDensity: VisualDensity.compact,
+        onPressed: () => showChat(context, oc),
+        icon: Badge(
+          isLabelVisible: oc.unread > 0,
+          label: Text('${oc.unread}'),
+          child: const Icon(Icons.chat_bubble_outline_rounded, color: kGoldLight, size: 26),
+        ),
+      );
+
+  Widget _specBar(GameView v) {
+    final oc = _oc;
+    return Container(
+      height: 74,
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(color: alpha(Colors.black, 0.35), borderRadius: BorderRadius.circular(16)),
+      child: Row(
+        children: [
+          const Icon(Icons.visibility_rounded, color: kGoldLight),
+          const SizedBox(width: 8),
+          const Expanded(child: Text('أنت تشاهد المباراة', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700))),
+          if (oc != null)
+            GoldButton(
+              'أريد ألعب',
+              fontSize: 14,
+              icon: Icons.sports_esports_rounded,
+              pad: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+              onTap: oc.wantPlay,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _voteBox(VoteReq r) {
+    final oc = _oc!;
+    return Positioned.fill(
+      child: Container(
+        color: alpha(Colors.black, 0.6),
+        alignment: Alignment.center,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Panel(
+            glowing: true,
+            pad: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('${r.name} يريد يلعب معكم', textAlign: TextAlign.center, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: kGoldLight)),
+                const SizedBox(height: 8),
+                const Text('يدخل من الجولة القادمة مكان أحد البوتات — لازم كل اللاعبين يوافقون', textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, height: 1.5)),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(child: GoldButton('موافق', fontSize: 16, pad: const EdgeInsets.symmetric(vertical: 10), onTap: () => oc.answerVote(true))),
+                    const SizedBox(width: 10),
+                    Expanded(child: GoldButton('رفض', ghost: true, fontSize: 16, pad: const EdgeInsets.symmetric(vertical: 10), onTap: () => oc.answerVote(false))),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

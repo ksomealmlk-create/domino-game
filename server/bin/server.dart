@@ -28,6 +28,7 @@ class Client {
   String? av;
   Room? room;
   int seat = -1;
+  int lastChat = 0, lastReq = 0;
   Client(this.ws);
 
   void send(Map<String, dynamic> m) {
@@ -48,6 +49,14 @@ class Room {
   bool started = false;
   bool _endRep = false;
   Timer? _botT, _fillT, _nextT;
+
+  // ----- المشاهدون والتصويت -----
+  static const int maxSpecs = 30;
+  final List<Client> specs = [];
+  final List<Client> queue = []; // مشاهدون وافق عليهم كل اللاعبين، يدخلون مع الجولة القادمة
+  Client? reqFrom;
+  final Map<Client, bool> votes = {};
+  Timer? _voteT;
 
   Room(this.code, this.five, this.n, this.target, {this.quick = false}) : seats = List<Seat?>.filled(n, null);
 
@@ -95,7 +104,15 @@ class Room {
         'list': [for (var r = 0; r < n; r++) seats[(p + r) % n]?.av],
       });
     }
+    for (final c in specs) {
+      _specAv(c);
+    }
   }
+
+  void _specAv(Client c) => c.send({
+        't': 'av',
+        'list': [for (var r = 0; r < n; r++) seats[r]?.av],
+      });
 
   void start() {
     if (started) return;
@@ -121,6 +138,13 @@ class Room {
       if (s == null || s.client == null) continue;
       final v = GameView.fromGame(g, p, names, last: last, msg: msg);
       s.client!.send({'t': 'state', ...v.toJson()});
+    }
+    if (specs.isNotEmpty) {
+      final sv = GameView.fromGame(g, 0, names, last: last, msg: msg, spectator: true);
+      final js = {'t': 'state', ...sv.toJson()};
+      for (final c in specs) {
+        c.send(js);
+      }
     }
   }
 
@@ -169,6 +193,7 @@ class Room {
   }
 
   void _newRound() {
+    _applyQueue();
     final g = game!;
     if (g.matchOver) {
       game = DominoGame(five: five, n: n, target: target);
@@ -208,7 +233,7 @@ class Room {
 
   void onNext(Client c) {
     final g = game;
-    if (g == null || !g.over) return;
+    if (g == null || !g.over || c.seat < 0) return;
     seats[c.seat]!.ready = true;
     if (seats.every((s) => s == null || s.ready || s.client == null)) {
       _nextT?.cancel();
@@ -217,6 +242,14 @@ class Room {
   }
 
   void onLeave(Client c) {
+    if (specs.remove(c)) {
+      queue.remove(c);
+      if (identical(reqFrom, c)) _endVote(false, silent: true);
+      c.room = null;
+      c.seat = -1;
+      sendSpecs();
+      return;
+    }
     final i = c.seat;
     c.room = null;
     c.seat = -1;
@@ -243,10 +276,12 @@ class Room {
     s.bot = true;
     s.ready = true;
     s.name = '${s.name} (بوت)';
+    votes.remove(c);
     if (!hasHumans) {
       close();
       return;
     }
+    _checkVote();
     broadcast(msg: '${s.name} غادر — حلّ مكانه بوت');
     final g = game!;
     if (!g.over && g.turn == i) _afterAction();
@@ -260,7 +295,162 @@ class Room {
     }
   }
 
+  // ----- المشاهدة والدردشة والتصويت -----
+  List<Client> get humans => [
+        for (final s in seats)
+          if (s != null && !s.bot && s.client != null) s.client!
+      ];
+
+  int get botSeats => seats.where((s) => s != null && s.bot).length;
+
+  void _everyone(Map<String, dynamic> m) {
+    for (final c in humans) {
+      c.send(m);
+    }
+    for (final c in specs) {
+      c.send(m);
+    }
+  }
+
+  void sendSpecs() => _everyone({'t': 'specs', 'list': [for (final c in specs) c.name]});
+
+  bool addSpec(Client c) {
+    if (specs.length >= maxSpecs) {
+      c.err('عدد المشاهدين ممتلئ');
+      return false;
+    }
+    specs.add(c);
+    c.room = this;
+    c.seat = -1;
+    _specAv(c);
+    final g = game;
+    if (g != null) {
+      c.send({'t': 'state', ...GameView.fromGame(g, 0, names, spectator: true).toJson()});
+    }
+    c.send({'t': 'note', 'm': 'أنت تشاهد المباراة 👁 — تقدر تطلب تلعب من زر (أريد ألعب)'});
+    sendSpecs();
+    return true;
+  }
+
+  void onChat(Client c, String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - c.lastChat < 700) return;
+    c.lastChat = now;
+    final txt = t.length > 120 ? t.substring(0, 120) : t;
+    final sp = c.seat < 0;
+    final all = <Client>[...humans, ...specs];
+    for (final x in all) {
+      x.send({'t': 'chat', 'n': c.name, 'm': txt, 'mine': identical(x, c), 'sp': sp});
+    }
+  }
+
+  /// مشاهد يطلب يلعب من الجولة القادمة: لازم كل اللاعبين الحقيقيين يوافقون.
+  void requestPlay(Client c) {
+    if (!specs.contains(c)) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (reqFrom != null) {
+      c.send({'t': 'note', 'm': 'فيه طلب قيد التصويت، انتظر شوي'});
+      return;
+    }
+    if (queue.contains(c)) {
+      c.send({'t': 'note', 'm': 'تمت الموافقة على طلبك، تدخل مع الجولة القادمة ✅'});
+      return;
+    }
+    if (now - c.lastReq < 45000) {
+      c.send({'t': 'note', 'm': 'انتظر شوي قبل ما تطلب مرة ثانية'});
+      return;
+    }
+    if (botSeats - queue.length <= 0) {
+      c.send({'t': 'note', 'm': 'كل المقاعد فيها لاعبين حقيقيين حالياً'});
+      return;
+    }
+    final hs = humans;
+    if (hs.isEmpty) return;
+    c.lastReq = now;
+    reqFrom = c;
+    votes.clear();
+    for (final h in hs) {
+      h.send({'t': 'vote', 'name': c.name, 'secs': 20});
+    }
+    c.send({'t': 'note', 'm': 'تم إرسال طلبك للاعبين، لازم الكل يوافق'});
+    _voteT?.cancel();
+    _voteT = Timer(const Duration(seconds: 20), () => _endVote(false, why: 'انتهت المهلة بدون موافقة الكل'));
+  }
+
+  void onVote(Client c, bool ok) {
+    if (reqFrom == null || !humans.contains(c)) return;
+    if (!ok) {
+      _endVote(false, why: '${c.name} رفض');
+      return;
+    }
+    votes[c] = true;
+    _checkVote();
+  }
+
+  void _checkVote() {
+    if (reqFrom == null) return;
+    final hs = humans;
+    if (hs.isNotEmpty && hs.every((h) => votes[h] == true)) _endVote(true);
+  }
+
+  void _endVote(bool ok, {String? why, bool silent = false}) {
+    final r = reqFrom;
+    reqFrom = null;
+    _voteT?.cancel();
+    votes.clear();
+    if (r == null) return;
+    for (final h in humans) {
+      h.send({'t': 'vote_end'});
+    }
+    if (silent) return;
+    if (ok) {
+      queue.add(r);
+      r.send({'t': 'note', 'm': 'وافقوا كلهم ✅ تدخل اللعب مع بداية الجولة القادمة'});
+      for (final h in humans) {
+        h.send({'t': 'note', 'm': '${r.name} راح يلعب من الجولة القادمة'});
+      }
+    } else {
+      final w = why ?? 'رفض أحد اللاعبين';
+      r.send({'t': 'note', 'm': 'تم رفض طلبك ($w)'});
+    }
+  }
+
+  /// يدخل المشاهدين الموافق عليهم مكان البوتات عند بداية الجولة.
+  void _applyQueue() {
+    var changed = false;
+    while (queue.isNotEmpty) {
+      final sp = queue.removeAt(0);
+      if (!specs.contains(sp)) continue;
+      final i = seats.indexWhere((s) => s != null && s.bot);
+      if (i < 0) {
+        sp.send({'t': 'note', 'm': 'ما لقيت مقعد فاضي'});
+        continue;
+      }
+      specs.remove(sp);
+      seats[i] = Seat(sp.name, client: sp)..av = sp.av;
+      sp.seat = i;
+      sp.room = this;
+      sp.send({'t': 'note', 'm': 'صرت لاعب! 🎲'});
+      changed = true;
+    }
+    if (changed) {
+      sendAvatars();
+      sendSpecs();
+    }
+  }
+
   void close() {
+    for (final c in specs) {
+      c.send({'t': 'closed', 'm': 'انتهت الغرفة'});
+      c.room = null;
+      c.seat = -1;
+    }
+    specs.clear();
+    queue.clear();
+    reqFrom = null;
+    _voteT?.cancel();
     _botT?.cancel();
     _fillT?.cancel();
     _nextT?.cancel();
@@ -320,25 +510,63 @@ void handle(Client c, Map<String, dynamic> m) {
     case 'join':
       {
         final r = rooms[_normCode(m['code'])];
-        if (r == null || r.started) return c.err('الغرفة غير موجودة أو بدأت اللعب');
+        if (r == null) return c.err('الغرفة غير موجودة');
+        if (c.room != null) c.room!.onLeave(c);
         c.name = _name(m['name']);
         c.av = _av(m['av']);
         c.did = _did(m['did'], c.name);
         if (!Admin.allow(c)) return;
+        if (r.started) {
+          // الغرفة تلعب الآن: يدخل مشاهد
+          r.addSpec(c);
+          return;
+        }
         if (r.add(c) < 0) return c.err('الغرفة ممتلئة');
         r.lobby();
         Admin.joined(c, r);
         if (r.quick && r.full) r.start();
         break;
       }
+    case 'rooms':
+      {
+        final list = <Map<String, dynamic>>[];
+        for (final r in rooms.values) {
+          if (!r.hasHumans) continue;
+          if (r.quick && !r.started) continue;
+          list.add({
+            'code': r.code,
+            'n': r.n,
+            'started': r.started,
+            'quick': r.quick,
+            'players': [
+              for (final s in r.seats)
+                if (s != null && !s.bot && s.client != null) s.name
+            ],
+            'bots': r.botSeats,
+            'specs': r.specs.length,
+          });
+        }
+        list.sort((a, b) => (b['started'] == true ? 1 : 0) - (a['started'] == true ? 1 : 0));
+        c.send({'t': 'rooms', 'list': list.take(30).toList()});
+        break;
+      }
     case 'invite':
       {
-        // صاحب غرفة خاصة لم تبدأ: يبلّغ كل اللاعبين (يمر عبر لوحة الإدارة التي تحدد المهلة والإيقاف)
+        // أي لاعب جالس بغرفة (بالانتظار أو أثناء اللعب) يبلّغ اللاعبين — المهلة والإيقاف من لوحة الإدارة
         final r = c.room;
-        if (r == null || r.started || r.quick || c.seat != 0) return;
+        if (r == null || c.seat < 0) return;
         Admin.invite(c, r);
         break;
       }
+    case 'chat':
+      c.room?.onChat(c, (m['m'] ?? '').toString());
+      break;
+    case 'wantplay':
+      c.room?.requestPlay(c);
+      break;
+    case 'vote':
+      c.room?.onVote(c, m['ok'] == true);
+      break;
     case 'start':
       {
         final r = c.room;
@@ -455,7 +683,7 @@ class Admin {
       c.send({'t': 'note', 'm': 'الإبلاغ غير متاح حالياً'});
       return;
     }
-    final j = await _post('/api/domino/invite', {'did': c.did, 'name': c.name, 'room': r.code});
+    final j = await _post('/api/domino/invite', {'did': c.did, 'name': c.name, 'room': r.code, 'live': r.started});
     if (j == null) {
       c.send({'t': 'note', 'm': 'تعذر إبلاغ اللاعبين، جرّب بعد شوي'});
     } else if (j['ok'] == true) {
