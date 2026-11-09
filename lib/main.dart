@@ -39,7 +39,7 @@ class DominoApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: Push.messenger,
       navigatorKey: Push.navKey,
-      title: 'Iraqe Domeno',
+      title: 'IRAQI Domeno',
       theme: ThemeData(
         brightness: Brightness.dark,
         useMaterial3: true,

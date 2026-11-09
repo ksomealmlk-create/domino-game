@@ -213,6 +213,18 @@ class Room {
       _turnEnd = null;
       _sendTurn(0);
       _botT = Timer(const Duration(milliseconds: 1100), _botStep);
+    } else if (!g.canPlay(g.turn) && g.stock.isEmpty) {
+      // لاعب حقيقي ما عنده حجر مناسب ولا يوجد سحب: تخطّي تلقائي
+      final p = g.turn;
+      _turnEnd = null;
+      _sendTurn(0);
+      _turnT = Timer(const Duration(milliseconds: 1200), () {
+        final gg = game;
+        if (gg == null || gg.over || gg.turn != p || gg.canPlay(p) || gg.stock.isNotEmpty) return;
+        gg.pass(p);
+        broadcast(msg: '${seats[p]?.name ?? ''} تخطّى الدور');
+        _afterAction();
+      });
     } else {
       // لاعب حقيقي: عنده 30 ثانية، وبعدها يُلعب عنه حجر عشوائي ويروح الدور للي بعده
       _turnEnd = DateTime.now().add(const Duration(seconds: turnSecs));

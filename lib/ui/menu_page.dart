@@ -186,7 +186,7 @@ class _MenuPageState extends State<MenuPage> with SingleTickerProviderStateMixin
                         end: Alignment.bottomCenter,
                         colors: [kGoldLight, kGold, kGoldDark],
                       ).createShader(r),
-                      child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _titleTap, child: const FittedBox(fit: BoxFit.scaleDown, child: Text('Iraqe Domeno', style: TextStyle(fontSize: 52, fontWeight: FontWeight.w900, color: Colors.white, height: 1.1)))),
+                      child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _titleTap, child: const FittedBox(fit: BoxFit.scaleDown, child: Text('IRAQI Domeno', style: TextStyle(fontSize: 52, fontWeight: FontWeight.w900, color: Colors.white, height: 1.1)))),
                     ),
                     const Text('D O M I N O   1 5 1', style: TextStyle(letterSpacing: 4, fontSize: 12, color: kGold)),
                     const SizedBox(height: 34),

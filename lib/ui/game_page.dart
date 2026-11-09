@@ -286,6 +286,8 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                                 ),
                               ],
                             ),
+                            if ((_oc?.idAt(p) ?? 0) != 0)
+                              Text('ID: ${_oc!.idAt(p)}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54, fontSize: 10.5, letterSpacing: 0.5)),
                             Text(v.n == 2 ? '★ ${v.scores[p]}' : '★ ${v.scores[p]} · ${v.handSizes[p]} حجر',
                                 maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: kGold, fontWeight: FontWeight.w800, fontSize: 11.5)),
                           ],
@@ -327,7 +329,7 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
       } else if (v.stock > 0) {
         mid = GoldButton('اسحب حجرًا (${v.stock})', icon: Icons.download_rounded, fontSize: 15, pad: const EdgeInsets.symmetric(vertical: 8, horizontal: 18), onTap: widget.ctrl.draw);
       } else {
-        mid = GoldButton('تخطَّ الدور', ghost: true, fontSize: 15, pad: const EdgeInsets.symmetric(vertical: 8, horizontal: 18), onTap: widget.ctrl.pass);
+        mid = const Text('ما عندك حجر — تخطّي تلقائي…', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700));
       }
     } else {
       mid = Text('${v.names[v.turn]} يفكّر…', style: const TextStyle(color: Colors.white60));
@@ -351,6 +353,7 @@ class _GamePageState extends State<GamePage> with SingleTickerProviderStateMixin
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(v.names[0], style: const TextStyle(fontSize: 12, color: Colors.white60)),
+                  if ((_oc?.myId ?? 0) != 0) Text('ID: ${_oc!.myId}', style: const TextStyle(fontSize: 10, color: Colors.white38)),
                   Text('★ ${v.scores[0]}', style: const TextStyle(color: kGold, fontWeight: FontWeight.w900, fontSize: 16)),
                 ],
               ),

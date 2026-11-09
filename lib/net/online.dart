@@ -418,7 +418,7 @@ class OnlineController extends GameController {
         case 'finvite':
           final fromN = (m['from'] ?? '').toString();
           final fRoom = (m['room'] ?? '').toString();
-          if (fRoom.isNotEmpty) Push.toastAction('🎲 $fromN يدعوك للعب', 'انضم', () => join(fRoom));
+          if (fRoom.isNotEmpty) Push.inviteDialog(fromN, () => join(fRoom));
           break;
         case 'vote_end':
           vote = null;

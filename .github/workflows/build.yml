@@ -53,7 +53,7 @@ jobs:
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.VIBRATE"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>\n    <application android:usesCleartextTraffic="true"#' $M
-          sed -i 's#android:label="domino3d"#android:label="Iraqe Domeno"#' $M
+          sed -i 's#android:label="domino3d"#android:label="IRAQI Domeno"#' $M
       - name: High-importance notification channel (pop-up invites)
         run: |
           M=android/app/src/main/AndroidManifest.xml

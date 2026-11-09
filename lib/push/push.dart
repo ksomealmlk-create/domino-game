@@ -35,6 +35,32 @@ class Push {
     ));
   }
 
+  /// نافذة دعوة صديق: يضغط موافق للانضمام أو رفض.
+  static void inviteDialog(String from, void Function() onAccept) {
+    final ctx = navKey.currentContext;
+    if (ctx == null) {
+      toastAction('🎲 $from يدعوك للعب', 'موافق', onAccept);
+      return;
+    }
+    showDialog<void>(
+      context: ctx,
+      builder: (d) => AlertDialog(
+        title: const Text('🎲 دعوة للعب'),
+        content: Text('$from يدعوك للعب معه'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(d).pop(), child: const Text('رفض')),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(d).pop();
+              onAccept();
+            },
+            child: const Text('موافق'),
+          ),
+        ],
+      ),
+    );
+  }
+
   static void toast(String t) {
     messenger.currentState?.showSnackBar(SnackBar(content: Text(t), duration: const Duration(seconds: 6), behavior: SnackBarBehavior.floating));
   }
