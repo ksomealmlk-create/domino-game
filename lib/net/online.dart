@@ -1,0 +1,511 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import '../audio/sfx.dart';
+import '../core/google_auth.dart';
+import '../core/settings.dart';
+import '../core/view.dart';
+import '../game/controller.dart';
+import '../push/push.dart';
+import 'voice.dart';
+
+enum OnlineStatus { idle, connecting, lobby, playing, error }
+
+class LobbyInfo {
+  final String code;
+  final int n;
+  final bool five;
+  final List<String?> players;
+  final bool host, quick;
+  const LobbyInfo(this.code, this.n, this.five, this.players, this.host, this.quick);
+}
+
+/// غرفة من قائمة الغرف النشطة
+class RoomInfo {
+  final String code;
+  final int n, bots, specs;
+  final bool started, quick;
+  final List<String> players;
+  const RoomInfo(this.code, this.n, this.bots, this.specs, this.started, this.quick, this.players);
+
+  factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
+        j['code'].toString(),
+        (j['n'] as num?)?.toInt() ?? 4,
+        (j['bots'] as num?)?.toInt() ?? 0,
+        (j['specs'] as num?)?.toInt() ?? 0,
+        j['started'] == true,
+        j['quick'] == true,
+        [for (final x in (j['players'] as List? ?? const [])) x.toString()],
+      );
+}
+
+/// صديق (أو طلب صداقة)
+class Friend {
+  final int id;
+  final String name;
+  final bool online, live;
+  final String? room;
+  const Friend(this.id, this.name, {this.online = false, this.room, this.live = false});
+
+  factory Friend.fromJson(Map<String, dynamic> j) => Friend(
+        (j['id'] as num).toInt(),
+        (j['name'] ?? '').toString(),
+        online: j['online'] == true,
+        room: j['room']?.toString(),
+        live: j['live'] == true,
+      );
+}
+
+class ChatMsg {
+  final String name, text;
+  final bool mine, spec;
+  const ChatMsg(this.name, this.text, this.mine, this.spec);
+}
+
+/// مشاهد يطلب يلعب، ينتظر موافقة كل اللاعبين
+class VoteReq {
+  final String name;
+  final int secs;
+  const VoteReq(this.name, this.secs);
+}
+
+class OnlineController extends GameController {
+  final Settings st;
+  OnlineController(this.st);
+
+  WebSocket? _ws;
+  OnlineStatus status = OnlineStatus.idle;
+  String? error;
+  LobbyInfo? lobby;
+  GameView? _view;
+  String? _toast;
+  Timer? _tt, _vt;
+  bool _closed = false;
+  bool _inviteAfter = false;
+  bool _browsing = false;
+
+  // قائمة الغرف، الدردشة، المشاهدون، التصويت
+  List<RoomInfo> rooms = const [];
+  bool roomsLoaded = false;
+  final List<ChatMsg> chat = [];
+  int unread = 0;
+  bool chatOpen = false;
+  List<String> specNames = const [];
+  VoteReq? vote;
+
+  // المكالمة الصوتية بين اللاعبين
+  VoiceChat? _voice;
+  bool get voiceOn => _voice?.joined ?? false;
+  bool get voiceBusy => _voice?.joining ?? false;
+  bool get micMuted => _voice?.muted ?? false;
+  int get voicePeers => _voice?.peers ?? 0;
+
+  /// أول ضغطة: يدخل المكالمة والمايك مفتوح. بعدها كل ضغطة تكتم/تفتح المايك.
+  Future<void> toggleVoice() async {
+    if (status != OnlineStatus.playing || spectating) {
+      Push.toast('المكالمة للاعبين فقط');
+      return;
+    }
+    final v = _voice ??= VoiceChat(send: _send, onChange: notifyListeners, deviceId: st.deviceId);
+    if (v.joined) {
+      v.toggleMute();
+    } else {
+      await v.join();
+    }
+  }
+
+  /// يخرج من المكالمة بالكامل (يقفل المايك)
+  void leaveVoice({bool notify = true}) => _voice?.leave(notify: notify);
+
+  // الحساب والأصدقاء
+  int myId = 0;
+  List<Friend> friends = const [], inReq = const [], outReq = const [];
+  bool friendsLoaded = false;
+  bool gLinked = false;
+  String gEmail = '';
+  List<int> _ids = const [];
+  int idAt(int p) => p >= 0 && p < _ids.length ? _ids[p] : 0;
+  bool isFriend(int id) => friends.any((f) => f.id == id);
+  bool hasPending(int id) => outReq.any((f) => f.id == id);
+
+  /// وقت انتهاء دور اللاعب الحالي (null = لا يوجد مؤقت)
+  DateTime? turnEnd;
+  int get turnLeft {
+    final e = turnEnd;
+    if (e == null) return 0;
+    final ms = e.difference(DateTime.now()).inMilliseconds;
+    return ms <= 0 ? 0 : (ms / 1000).ceil();
+  }
+
+  @override
+  GameView? get view => _view;
+  @override
+  String? get toast => _toast;
+  List<Uint8List?> _avatars = const [];
+  @override
+  List<Uint8List?> get avatars => _avatars;
+  @override
+  bool get isOnline => true;
+
+  bool get spectating => status == OnlineStatus.playing && (_view?.spectator ?? false);
+
+  /// يفتح الاتصال (أو يستعمل المفتوح). السيرفر المجاني ينام ويحتاج وقت ليصحى، لذلك نعيد المحاولة.
+  Future<bool> _open() async {
+    if (_ws != null) return true;
+    var url = st.server.trim();
+    if (!url.startsWith('ws')) url = 'wss://$url';
+    WebSocket? ws;
+    for (var i = 0; i < 4 && ws == null && !_closed; i++) {
+      try {
+        ws = await WebSocket.connect(url).timeout(const Duration(seconds: 25));
+      } catch (_) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+    if (ws == null) return false;
+    final w = ws;
+    if (_closed) {
+      w.close();
+      return false;
+    }
+    _ws = w;
+    w.pingInterval = const Duration(seconds: 20);
+    w.listen(_onData, onDone: () => _onDone(w), onError: (_) => _onDone(w));
+    _send({'t': 'me', 'did': st.deviceId, 'name': st.displayName}); // تسجيل الحساب + رقم الـ ID
+    return true;
+  }
+
+  Future<void> _connect(Map<String, dynamic> first) async {
+    error = null;
+    chat.clear();
+    unread = 0;
+    specNames = const [];
+    vote = null;
+    turnEnd = null;
+    status = OnlineStatus.connecting;
+    notifyListeners();
+    final ok = await _open();
+    if (_closed) return;
+    if (!ok) {
+      status = OnlineStatus.error;
+      error = 'تعذّر الاتصال بالسيرفر. تأكد من الإنترنت وجرّب مرة ثانية.';
+      notifyListeners();
+      return;
+    }
+    _send(first);
+  }
+
+  /// يتصل بالسيرفر وهو بالقائمة الرئيسية حتى يعرض الغرف النشطة.
+  Future<void> browse() async {
+    if (_closed || _browsing) return;
+    if (_ws != null) {
+      refreshRooms();
+      return;
+    }
+    _browsing = true;
+    final ok = await _open();
+    _browsing = false;
+    if (ok) refreshRooms();
+  }
+
+  void refreshRooms() {
+    if (_closed) return;
+    if (_ws != null) {
+      _send({'t': 'rooms'});
+    } else if (!_browsing && (status == OnlineStatus.idle || status == OnlineStatus.error)) {
+      browse();
+    }
+  }
+
+  /// يوقظ السيرفر مسبقًا (طلب HTTP بسيط) حتى يكون جاهزًا عند الضغط على إنشاء/انضمام.
+  static Future<void> wake(String wsUrl) async {
+    try {
+      final u = Uri.parse(wsUrl.replaceFirst('wss://', 'https://').replaceFirst('ws://', 'http://'));
+      final c = HttpClient()..connectionTimeout = const Duration(seconds: 70);
+      final r = await c.getUrl(u).then((r) => r.close()).timeout(const Duration(seconds: 70));
+      await r.drain();
+      c.close();
+    } catch (_) {}
+  }
+
+  void _send(Map<String, dynamic> m) {
+    try {
+      _ws?.add(jsonEncode(m));
+    } catch (_) {}
+  }
+
+  Map<String, dynamic> _cfg() => {'name': st.displayName, 'five': st.five, 'n': st.players, 'target': st.target, 'did': st.deviceId, if (st.avatarB64.isNotEmpty) 'av': st.avatarB64};
+
+  Future<void> quick() => _connect({'t': 'quick', ..._cfg()});
+  Future<void> create() {
+    _inviteAfter = st.inviteOnCreate;
+    return _connect({'t': 'create', ..._cfg()});
+  }
+
+  /// يبلّغ كل اللاعبين بغرفتك (إشعار ينقلهم مباشرة لها) — يشتغل بالانتظار وأثناء اللعب
+  void invite() => _send({'t': 'invite'});
+
+  /// ينضم للغرفة. إذا كانت تلعب الآن يدخل مشاهدًا.
+  Future<void> join(String code) => _connect({'t': 'join', 'code': _normCode(code), 'name': st.displayName, 'did': st.deviceId, if (st.avatarB64.isNotEmpty) 'av': st.avatarB64});
+
+  static String _normCode(String v) {
+    final b = StringBuffer();
+    for (final r in v.runes) {
+      if (r >= 0x30 && r <= 0x39) {
+        b.writeCharCode(r);
+      } else if (r >= 0x660 && r <= 0x669) {
+        b.writeCharCode(0x30 + r - 0x660);
+      } else if (r >= 0x6F0 && r <= 0x6F9) {
+        b.writeCharCode(0x30 + r - 0x6F0);
+      }
+    }
+    return b.toString();
+  }
+
+  void startNow() => _send({'t': 'start'});
+
+  // ----- دردشة / مشاهدة / تصويت -----
+  void sendChat(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    _send({'t': 'chat', 'm': t});
+  }
+
+  void openChat() {
+    chatOpen = true;
+    unread = 0;
+    notifyListeners();
+  }
+
+  void closeChat() {
+    chatOpen = false;
+  }
+
+  /// مشاهد: أريد ألعب من الجولة القادمة (يحتاج موافقة كل اللاعبين)
+  void wantPlay() => _send({'t': 'wantplay'});
+
+  // ----- الأصدقاء -----
+  /// ربط الحساب بجيميل (أو استرجاع حسابك القديم إذا الجيميل مربوط من قبل)
+  Future<void> googleAuth() async {
+    if (myId == 0) {
+      Push.toast('انتظر شوي حتى يتصل الحساب');
+      return;
+    }
+    try {
+      final t = await GoogleAuth.idToken();
+      if (t == null) return;
+      Push.toast('جاري التحقق من حسابك…');
+      _send({'t': 'gauth', 'tok': t});
+    } on PlatformException catch (e) {
+      final api = RegExp(r'ApiException: (\d+)').firstMatch('${e.message}')?.group(1);
+      String hint = '';
+      if (api == '10') {
+        hint = ' — خطأ إعدادات: البصمة أو اسم الحزمة غير مطابق';
+      } else if (api == '12500') {
+        hint = ' — إعدادات جوجل غير مكتملة';
+      } else if (api == '7' || api == '8') {
+        hint = ' — مشكلة اتصال بخدمات جوجل';
+      }
+      final raw = '${e.message ?? ''}';
+      Push.toast('تعذّر الدخول بجوجل [${e.code}] ${api != null ? '($api)' : (raw.length > 90 ? raw.substring(0, 90) : raw)}$hint');
+    } catch (_) {
+      Push.toast('تعذّر تسجيل الدخول بجوجل');
+    }
+  }
+
+  void friendsRefresh() => _send({'t': 'fr', 'op': 'list'});
+  void friendReq(int id) => _send({'t': 'fr', 'op': 'req', 'id': id});
+  void friendAccept(int id) => _send({'t': 'fr', 'op': 'accept', 'id': id});
+  void friendReject(int id) => _send({'t': 'fr', 'op': 'reject', 'id': id});
+  void friendRemove(int id) => _send({'t': 'fr', 'op': 'remove', 'id': id});
+  void friendInvite(int id) => _send({'t': 'finvite', 'id': id});
+
+  void answerVote(bool ok) {
+    _send({'t': 'vote', 'ok': ok});
+    vote = null;
+    _vt?.cancel();
+    notifyListeners();
+  }
+
+  void _onData(dynamic raw) {
+    if (_closed) return;
+    try {
+      final m = Map<String, dynamic>.from(jsonDecode(raw as String) as Map);
+      switch (m['t']) {
+        case 'lobby':
+          lobby = LobbyInfo(m['code'] as String, m['n'] as int, m['five'] as bool,
+              List<String?>.from(m['players'] as List), m['host'] as bool, (m['quick'] as bool?) ?? false);
+          if (status != OnlineStatus.playing) status = OnlineStatus.lobby;
+          if (_inviteAfter && lobby!.host && !lobby!.quick) {
+            _inviteAfter = false;
+            invite();
+          }
+          break;
+        case 'state':
+          final v = GameView.fromJson(m);
+          _view = v;
+          status = OnlineStatus.playing;
+          if (v.msg != null) _setToast(v.msg!);
+          Sfx.i.enabled = st.sound;
+          break;
+        case 'av':
+          _avatars = [
+            for (final x in (m['list'] as List))
+              if (x == null) null else base64Decode(x as String)
+          ];
+          _ids = [for (final x in (m['ids'] as List? ?? const [])) (x as num).toInt()];
+          break;
+        case 'rooms':
+          rooms = [for (final x in (m['list'] as List)) RoomInfo.fromJson(Map<String, dynamic>.from(x as Map))];
+          roomsLoaded = true;
+          break;
+        case 'chat':
+          final mine = m['mine'] == true;
+          final nm = (m['n'] ?? '').toString();
+          final tx = (m['m'] ?? '').toString();
+          chat.add(ChatMsg(nm, tx, mine, m['sp'] == true));
+          if (chat.length > 80) chat.removeAt(0);
+          if (!mine && !chatOpen) {
+            unread++;
+            _setToast('💬 $nm: ${tx.length > 40 ? '${tx.substring(0, 40)}…' : tx}');
+          }
+          break;
+        case 'vpeers':
+        case 'rtc':
+        case 'vgone':
+          _voice?.onMsg(m);
+          break;
+        case 'specs':
+          specNames = [for (final x in (m['list'] as List)) x.toString()];
+          break;
+        case 'vote':
+          final secs = (m['secs'] as num?)?.toInt() ?? 20;
+          vote = VoteReq((m['name'] ?? '').toString(), secs);
+          _vt?.cancel();
+          _vt = Timer(Duration(seconds: secs + 1), () {
+            vote = null;
+            notifyListeners();
+          });
+          break;
+        case 'tt':
+          final tsec = (m['s'] as num?)?.toInt() ?? 0;
+          turnEnd = tsec > 0 ? DateTime.now().add(Duration(seconds: tsec)) : null;
+          break;
+        case 'fr':
+          {
+            final me = Map<String, dynamic>.from(m['me'] as Map);
+            myId = (me['id'] as num).toInt();
+            List<Friend> fl(String k) => [for (final x in (m[k] as List)) Friend.fromJson(Map<String, dynamic>.from(x as Map))];
+            friends = fl('friends');
+            inReq = fl('inReq');
+            outReq = fl('outReq');
+            friendsLoaded = true;
+            gLinked = m['g'] == true;
+            gEmail = (m['email'] ?? '').toString();
+            break;
+          }
+        case 'gres':
+          Push.toast(m['mode'] == 'login' ? 'تم استرجاع حسابك ✅ رقمك وأصدقاؤك رجعوا' : 'تم ربط حسابك بجيميلك ✅');
+          break;
+        case 'fnote':
+          final fm = (m['m'] ?? '').toString();
+          if (fm.isNotEmpty) Push.toast(fm);
+          friendsRefresh();
+          break;
+        case 'finvite':
+          final fromN = (m['from'] ?? '').toString();
+          final fRoom = (m['room'] ?? '').toString();
+          if (fRoom.isNotEmpty) Push.inviteDialog(fromN, () => join(fRoom));
+          break;
+        case 'vote_end':
+          vote = null;
+          _vt?.cancel();
+          break;
+        case 'closed':
+          leaveVoice(notify: false);
+          error = (m['m'] ?? 'انتهت الغرفة').toString();
+          status = OnlineStatus.error;
+          _view = null;
+          lobby = null;
+          vote = null;
+          turnEnd = null;
+          break;
+        case 'note':
+          final nt = m['m'];
+          if (nt is String && nt.isNotEmpty) Push.toast(nt);
+          break;
+        case 'err':
+          error = m['m'] as String?;
+          if (status != OnlineStatus.playing) status = OnlineStatus.error;
+          break;
+      }
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  void _setToast(String s) {
+    _toast = s;
+    _tt?.cancel();
+    _tt = Timer(const Duration(milliseconds: 1700), () {
+      _toast = null;
+      notifyListeners();
+    });
+  }
+
+  void _onDone(WebSocket w) {
+    if (_closed || !identical(w, _ws)) return;
+    _ws = null;
+    leaveVoice(notify: false);
+    if (status != OnlineStatus.idle) {
+      status = OnlineStatus.error;
+      error ??= 'انقطع الاتصال بالسيرفر';
+    }
+    notifyListeners();
+  }
+
+  /// يخرج من الغرفة لكن يبقي الاتصال مفتوحًا حتى تظهر قائمة الغرف.
+  void reset() {
+    leaveVoice(notify: false);
+    _send({'t': 'leave'});
+    lobby = null;
+    _view = null;
+    _avatars = const [];
+    chat.clear();
+    unread = 0;
+    specNames = const [];
+    vote = null;
+    turnEnd = null;
+    status = OnlineStatus.idle;
+    error = null;
+    notifyListeners();
+    refreshRooms();
+  }
+
+  @override
+  void play(int i, String side) => _send({'t': 'play', 'i': i, 'side': side});
+  @override
+  void draw() => _send({'t': 'draw'});
+  @override
+  void pass() => _send({'t': 'pass'});
+  @override
+  void next() => _send({'t': 'next'});
+  @override
+  void leave() {
+    leaveVoice(notify: false);
+    _send({'t': 'leave'});
+    _ws?.close();
+    _ws = null;
+  }
+
+  @override
+  void dispose() {
+    _closed = true;
+    _tt?.cancel();
+    _vt?.cancel();
+    leave();
+    super.dispose();
+  }
+}

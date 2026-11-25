@@ -1,0 +1,1002 @@
+// سيرفر دومينو أونلاين — Dart خالص (dart:io) بدون أي مكتبات خارجية.
+// التشغيل:  cd server && dart run bin/server.dart   (المنفذ 8080 أو متغير PORT)
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+
+import '../../lib/core/rules.dart';
+import '../../lib/core/view.dart';
+
+final Map<String, Room> rooms = {};
+final Set<Client> clients = {};
+final Map<int, Client> byPid = {}; // اللاعبون المتصلون حسب ID
+final Random _rnd = Random();
+
+class Seat {
+  String name;
+  Client? client;
+  bool bot;
+  bool ready = false;
+  String? av;
+  Seat(this.name, {this.client, this.bot = false});
+}
+
+class Client {
+  final WebSocket ws;
+  String name = 'لاعب';
+  String did = '';
+  String? av;
+  Room? room;
+  int seat = -1;
+  int lastChat = 0, lastReq = 0;
+  int pid = 0; // رقم اللاعب العام (ID)
+  String devId = ''; // معرّف الجهاز (للربط مع جيميل)
+  Set<int> friends = {};
+  Client(this.ws);
+
+  void send(Map<String, dynamic> m) {
+    try {
+      ws.add(jsonEncode(m));
+    } catch (_) {}
+  }
+
+  void err(String m) => send({'t': 'err', 'm': m});
+}
+
+class Room {
+  final String code;
+  final bool five, quick;
+  final int n, target;
+  final List<Seat?> seats;
+  DominoGame? game;
+  bool started = false;
+  bool _endRep = false;
+  Timer? _botT, _fillT, _nextT;
+
+  // ----- المشاهدون والتصويت -----
+  static const int maxSpecs = 30;
+  final List<Client> specs = [];
+  final List<Client> queue = []; // مشاهدون وافق عليهم كل اللاعبين، يدخلون مع الجولة القادمة
+  Client? reqFrom;
+  final Map<Client, bool> votes = {};
+  Timer? _voteT;
+
+  // ----- المكالمة الصوتية (WebRTC): السيرفر فقط يمرّر رسائل الاتصال بين اللاعبين -----
+  final Set<Client> voice = {};
+
+  void voiceJoin(Client c) {
+    if (!started || c.seat < 0 || c.seat >= n) return;
+    if (!voice.add(c)) return;
+    // الجديد يتصل بكل الموجودين (هو يرسل العرض، والباقي يردّون) حتى ما يتضارب الطرفان
+    c.send({'t': 'vpeers', 'list': [for (final x in voice) if (!identical(x, c)) x.seat]});
+  }
+
+  void voiceLeave(Client c, int seat) {
+    if (!voice.remove(c)) return;
+    for (final x in voice) {
+      x.send({'t': 'vgone', 's': seat});
+    }
+  }
+
+  void voiceRelay(Client c, Map<String, dynamic> m) {
+    if (!voice.contains(c)) return;
+    final to = (m['to'] as num?)?.toInt() ?? -1;
+    for (final x in voice) {
+      if (x.seat == to && !identical(x, c)) {
+        x.send({'t': 'rtc', 'from': c.seat, 'd': m['d']});
+        return;
+      }
+    }
+  }
+
+  // ----- مهلة الدور -----
+  static const int turnSecs = 30;
+  Timer? _turnT;
+  DateTime? _turnEnd;
+
+  Room(this.code, this.five, this.n, this.target, {this.quick = false}) : seats = List<Seat?>.filled(n, null);
+
+  List<String> get names => [for (final s in seats) s?.name ?? '-'];
+  bool get hasHumans => seats.any((s) => s != null && !s.bot && s.client != null);
+
+  int add(Client c) {
+    for (var i = 0; i < n; i++) {
+      if (seats[i] == null) {
+        seats[i] = Seat(c.name, client: c)..av = c.av;
+        c.room = this;
+        c.seat = i;
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  bool get full => !seats.contains(null);
+
+  void lobby() {
+    for (var i = 0; i < n; i++) {
+      final s = seats[i];
+      if (s == null || s.client == null) continue;
+      s.client!.send({
+        't': 'lobby',
+        'code': code,
+        'n': n,
+        'five': five,
+        'quick': quick,
+        'host': i == 0,
+        'players': [for (final x in seats) x?.name],
+      });
+    }
+    sendAvatars();
+  }
+
+  /// يرسل صور اللاعبين لكل واحد بترتيبه النسبي (0 = هو نفسه).
+  void sendAvatars() {
+    for (var p = 0; p < n; p++) {
+      final s = seats[p];
+      if (s == null || s.client == null) continue;
+      s.client!.send({
+        't': 'av',
+        'list': [for (var r = 0; r < n; r++) seats[(p + r) % n]?.av],
+        'ids': [for (var r = 0; r < n; r++) seats[(p + r) % n]?.client?.pid ?? 0],
+      });
+    }
+    for (final c in specs) {
+      _specAv(c);
+    }
+  }
+
+  void _specAv(Client c) => c.send({
+        't': 'av',
+        'list': [for (var r = 0; r < n; r++) seats[r]?.av],
+        'ids': [for (var r = 0; r < n; r++) seats[r]?.client?.pid ?? 0],
+      });
+
+  void start() {
+    if (started) return;
+    _fillT?.cancel();
+    var b = 1;
+    for (var i = 0; i < n; i++) {
+      seats[i] ??= Seat('بوت ${b++}', bot: true);
+    }
+    started = true;
+    Admin.started(this);
+    sendAvatars();
+    game = DominoGame(five: five, n: n, target: target);
+    final r = game!.startRound();
+    broadcast(last: r == null ? null : LastMove.from(r), msg: r == null ? '${seats[game!.turn]!.name} يبدأ الجولة' : null);
+    _afterAction();
+  }
+
+  void broadcast({LastMove? last, String? msg}) {
+    final g = game;
+    if (g == null) return;
+    for (var p = 0; p < n; p++) {
+      final s = seats[p];
+      if (s == null || s.client == null) continue;
+      final v = GameView.fromGame(g, p, names, last: last, msg: msg);
+      s.client!.send({'t': 'state', ...v.toJson()});
+    }
+    if (specs.isNotEmpty) {
+      final sv = GameView.fromGame(g, 0, names, last: last, msg: msg, spectator: true);
+      final js = {'t': 'state', ...sv.toJson()};
+      for (final c in specs) {
+        c.send(js);
+      }
+    }
+  }
+
+  void _afterAction() {
+    final g = game!;
+    _botT?.cancel();
+    _turnT?.cancel();
+    if (g.over) {
+      _turnEnd = null;
+      _sendTurn(0);
+      if (g.matchOver && !_endRep) {
+        _endRep = true;
+        Admin.ended(this, g);
+      }
+      for (final s in seats) {
+        if (s != null) s.ready = s.bot;
+      }
+      _nextT?.cancel();
+      if (!g.matchOver) {
+        _nextT = Timer(const Duration(seconds: 25), () {
+          if (game != null && game!.over && !game!.matchOver) _newRound();
+        });
+      }
+      return;
+    }
+    if (seats[g.turn]!.bot) {
+      _turnEnd = null;
+      _sendTurn(0);
+      _botT = Timer(const Duration(milliseconds: 1100), _botStep);
+    } else if (!g.canPlay(g.turn) && g.stock.isEmpty) {
+      // لاعب حقيقي ما عنده حجر مناسب ولا يوجد سحب: تخطّي تلقائي
+      final p = g.turn;
+      _turnEnd = null;
+      _sendTurn(0);
+      _turnT = Timer(const Duration(milliseconds: 1200), () {
+        final gg = game;
+        if (gg == null || gg.over || gg.turn != p || gg.canPlay(p) || gg.stock.isNotEmpty) return;
+        gg.pass(p);
+        broadcast(msg: '${seats[p]?.name ?? ''} تخطّى الدور');
+        _afterAction();
+      });
+    } else {
+      // لاعب حقيقي: عنده 30 ثانية، وبعدها يُلعب عنه حجر عشوائي ويروح الدور للي بعده
+      _turnEnd = DateTime.now().add(const Duration(seconds: turnSecs));
+      _sendTurn(turnSecs);
+      _turnT = Timer(const Duration(seconds: turnSecs), _autoMove);
+    }
+  }
+
+  void _sendTurn(int s) => _everyone({'t': 'tt', 's': s});
+
+  /// انتهت مهلة اللاعب: يسحب إذا ما عنده حركة، ثم يلعب حجرًا عشوائيًا (أو يتخطى) وينتقل الدور.
+  void _autoMove() {
+    final g = game;
+    if (g == null || g.over) return;
+    final p = g.turn;
+    final s = seats[p];
+    if (s == null || s.bot || s.client == null) return;
+    final name = s.name;
+    while (!g.canPlay(p) && g.stock.isNotEmpty) {
+      g.draw(p);
+    }
+    final ms = g.allMoves(p);
+    if (ms.isNotEmpty) {
+      final mv = ms[_rnd.nextInt(ms.length)];
+      final r = g.play(p, mv.i, mv.side);
+      broadcast(last: LastMove.from(r), msg: '$name انتهى وقته — لُعب عنه تلقائيًا${r.gained > 0 ? '  +${r.gained}' : ''}');
+    } else {
+      g.pass(p);
+      broadcast(msg: '$name انتهى وقته — تخطّى الدور');
+    }
+    _afterAction();
+  }
+
+  void _botStep() {
+    final g = game;
+    if (g == null || g.over) return;
+    final p = g.turn;
+    final s = seats[p]!;
+    if (!s.bot) return;
+    final m = g.chooseMove(p, 1);
+    if (m != null) {
+      final r = g.play(p, m.i, m.side);
+      broadcast(last: LastMove.from(r), msg: r.gained > 0 ? '${s.name}  +${r.gained}' : null);
+    } else if (g.stock.isNotEmpty) {
+      g.draw(p);
+      broadcast(msg: '${s.name} سحب حجرًا');
+    } else {
+      g.pass(p);
+      broadcast(msg: '${s.name} تخطّى الدور');
+    }
+    _afterAction();
+  }
+
+  void _newRound() {
+    _applyQueue();
+    final g = game!;
+    if (g.matchOver) {
+      game = DominoGame(five: five, n: n, target: target);
+      _endRep = false;
+    }
+    final r = game!.startRound();
+    broadcast(last: r == null ? null : LastMove.from(r), msg: r == null ? '${seats[game!.turn]!.name} يبدأ الجولة' : null);
+    _afterAction();
+  }
+
+  // ----- أفعال اللاعبين -----
+  void onPlay(Client c, int i, String side) {
+    final g = game;
+    if (g == null || g.over || g.turn != c.seat) return;
+    final hand = g.hands[c.seat];
+    if (i < 0 || i >= hand.length) return;
+    if (!sidesFor(hand[i], g.chain).contains(side)) return c.err('حركة غير صالحة');
+    final r = g.play(c.seat, i, side);
+    broadcast(last: LastMove.from(r), msg: r.gained > 0 ? '${c.name}  +${r.gained}' : null);
+    _afterAction();
+  }
+
+  void onDraw(Client c) {
+    final g = game;
+    if (g == null || g.over || g.turn != c.seat || g.canPlay(c.seat) || g.stock.isEmpty) return;
+    g.draw(c.seat);
+    broadcast(msg: '${c.name} سحب حجرًا');
+  }
+
+  void onPass(Client c) {
+    final g = game;
+    if (g == null || g.over || g.turn != c.seat || g.canPlay(c.seat) || g.stock.isNotEmpty) return;
+    g.pass(c.seat);
+    broadcast(msg: '${c.name} تخطّى الدور');
+    _afterAction();
+  }
+
+  void onNext(Client c) {
+    final g = game;
+    if (g == null || !g.over || c.seat < 0) return;
+    seats[c.seat]!.ready = true;
+    if (seats.every((s) => s == null || s.ready || s.client == null)) {
+      _nextT?.cancel();
+      _newRound();
+    }
+  }
+
+  void onLeave(Client c) {
+    voiceLeave(c, c.seat);
+    if (specs.remove(c)) {
+      queue.remove(c);
+      if (identical(reqFrom, c)) _endVote(false, silent: true);
+      c.room = null;
+      c.seat = -1;
+      sendSpecs();
+      return;
+    }
+    final i = c.seat;
+    c.room = null;
+    c.seat = -1;
+    if (i < 0 || i >= n) return;
+    final s = seats[i];
+    if (s == null) return;
+    if (!started) {
+      seats[i] = null;
+      if (!seats.any((x) => x != null)) {
+        close();
+      } else {
+        // أعد ترقيم المقاعد بعد خروج لاعب من الردهة
+        final cur = seats.whereType<Seat>().toList();
+        for (var k = 0; k < n; k++) {
+          seats[k] = k < cur.length ? cur[k] : null;
+          seats[k]?.client?.seat = k;
+        }
+        lobby();
+      }
+      return;
+    }
+    // أثناء اللعب: يتحوّل مقعد المغادر إلى بوت
+    s.client = null;
+    s.bot = true;
+    s.ready = true;
+    s.name = '${s.name} (بوت)';
+    votes.remove(c);
+    if (!hasHumans) {
+      close();
+      return;
+    }
+    _checkVote();
+    broadcast(msg: '${s.name} غادر — حلّ مكانه بوت');
+    final g = game!;
+    if (!g.over && g.turn == i) _afterAction();
+    if (g.over) onNextCheck();
+  }
+
+  void onNextCheck() {
+    if (seats.every((s) => s == null || s.ready || s.client == null) && game != null && game!.over) {
+      _nextT?.cancel();
+      _newRound();
+    }
+  }
+
+  // ----- المشاهدة والدردشة والتصويت -----
+  List<Client> get humans => [
+        for (final s in seats)
+          if (s != null && !s.bot && s.client != null) s.client!
+      ];
+
+  int get botSeats => seats.where((s) => s != null && s.bot).length;
+
+  void _everyone(Map<String, dynamic> m) {
+    for (final c in humans) {
+      c.send(m);
+    }
+    for (final c in specs) {
+      c.send(m);
+    }
+  }
+
+  void sendSpecs() => _everyone({'t': 'specs', 'list': [for (final c in specs) c.name]});
+
+  bool addSpec(Client c) {
+    if (specs.length >= maxSpecs) {
+      c.err('عدد المشاهدين ممتلئ');
+      return false;
+    }
+    specs.add(c);
+    c.room = this;
+    c.seat = -1;
+    _specAv(c);
+    final g = game;
+    if (g != null) {
+      c.send({'t': 'state', ...GameView.fromGame(g, 0, names, spectator: true).toJson()});
+    }
+    final te = _turnEnd;
+    if (g != null && !g.over && te != null) {
+      final left = te.difference(DateTime.now()).inSeconds;
+      if (left > 0) c.send({'t': 'tt', 's': left});
+    }
+    c.send({'t': 'note', 'm': 'أنت تشاهد المباراة 👁 — تقدر تطلب تلعب من زر (أريد ألعب)'});
+    sendSpecs();
+    return true;
+  }
+
+  void onChat(Client c, String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - c.lastChat < 700) return;
+    c.lastChat = now;
+    final txt = t.length > 120 ? t.substring(0, 120) : t;
+    final sp = c.seat < 0;
+    final all = <Client>[...humans, ...specs];
+    for (final x in all) {
+      x.send({'t': 'chat', 'n': c.name, 'm': txt, 'mine': identical(x, c), 'sp': sp});
+    }
+  }
+
+  /// مشاهد يطلب يلعب من الجولة القادمة: لازم كل اللاعبين الحقيقيين يوافقون.
+  void requestPlay(Client c) {
+    if (!specs.contains(c)) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (reqFrom != null) {
+      c.send({'t': 'note', 'm': 'فيه طلب قيد التصويت، انتظر شوي'});
+      return;
+    }
+    if (queue.contains(c)) {
+      c.send({'t': 'note', 'm': 'تمت الموافقة على طلبك، تدخل مع الجولة القادمة ✅'});
+      return;
+    }
+    if (now - c.lastReq < 45000) {
+      c.send({'t': 'note', 'm': 'انتظر شوي قبل ما تطلب مرة ثانية'});
+      return;
+    }
+    if (botSeats - queue.length <= 0) {
+      c.send({'t': 'note', 'm': 'كل المقاعد فيها لاعبين حقيقيين حالياً'});
+      return;
+    }
+    final hs = humans;
+    if (hs.isEmpty) return;
+    c.lastReq = now;
+    reqFrom = c;
+    votes.clear();
+    for (final h in hs) {
+      h.send({'t': 'vote', 'name': c.name, 'secs': 20});
+    }
+    c.send({'t': 'note', 'm': 'تم إرسال طلبك للاعبين، لازم الكل يوافق'});
+    _voteT?.cancel();
+    _voteT = Timer(const Duration(seconds: 20), () => _endVote(false, why: 'انتهت المهلة بدون موافقة الكل'));
+  }
+
+  void onVote(Client c, bool ok) {
+    if (reqFrom == null || !humans.contains(c)) return;
+    if (!ok) {
+      _endVote(false, why: '${c.name} رفض');
+      return;
+    }
+    votes[c] = true;
+    _checkVote();
+  }
+
+  void _checkVote() {
+    if (reqFrom == null) return;
+    final hs = humans;
+    if (hs.isNotEmpty && hs.every((h) => votes[h] == true)) _endVote(true);
+  }
+
+  void _endVote(bool ok, {String? why, bool silent = false}) {
+    final r = reqFrom;
+    reqFrom = null;
+    _voteT?.cancel();
+    votes.clear();
+    if (r == null) return;
+    for (final h in humans) {
+      h.send({'t': 'vote_end'});
+    }
+    if (silent) return;
+    if (ok) {
+      queue.add(r);
+      r.send({'t': 'note', 'm': 'وافقوا كلهم ✅ تدخل اللعب مع بداية الجولة القادمة'});
+      for (final h in humans) {
+        h.send({'t': 'note', 'm': '${r.name} راح يلعب من الجولة القادمة'});
+      }
+    } else {
+      final w = why ?? 'رفض أحد اللاعبين';
+      r.send({'t': 'note', 'm': 'تم رفض طلبك ($w)'});
+    }
+  }
+
+  /// يدخل المشاهدين الموافق عليهم مكان البوتات عند بداية الجولة.
+  void _applyQueue() {
+    var changed = false;
+    while (queue.isNotEmpty) {
+      final sp = queue.removeAt(0);
+      if (!specs.contains(sp)) continue;
+      final i = seats.indexWhere((s) => s != null && s.bot);
+      if (i < 0) {
+        sp.send({'t': 'note', 'm': 'ما لقيت مقعد فاضي'});
+        continue;
+      }
+      specs.remove(sp);
+      seats[i] = Seat(sp.name, client: sp)..av = sp.av;
+      sp.seat = i;
+      sp.room = this;
+      sp.send({'t': 'note', 'm': 'صرت لاعب! 🎲'});
+      changed = true;
+    }
+    if (changed) {
+      sendAvatars();
+      sendSpecs();
+    }
+  }
+
+  void close() {
+    for (final c in specs) {
+      c.send({'t': 'closed', 'm': 'انتهت الغرفة'});
+      c.room = null;
+      c.seat = -1;
+    }
+    specs.clear();
+    queue.clear();
+    voice.clear();
+    reqFrom = null;
+    _voteT?.cancel();
+    _turnT?.cancel();
+    _botT?.cancel();
+    _fillT?.cancel();
+    _nextT?.cancel();
+    rooms.remove(code);
+  }
+}
+
+String _newCode() {
+  for (;;) {
+    final c = (1000 + _rnd.nextInt(9000)).toString();
+    if (!rooms.containsKey(c)) return c;
+  }
+}
+
+Room? _findQuick(bool five, int n) {
+  for (final r in rooms.values) {
+    if (r.quick && !r.started && r.five == five && r.n == n && !r.full) return r;
+  }
+  return null;
+}
+
+Room _makeQuick(bool five, int n, int target) {
+  final r = Room(_newCode(), five, n, target, quick: true);
+  rooms[r.code] = r;
+  r._fillT = Timer(const Duration(seconds: 12), () {
+    if (!r.started && r.seats.any((s) => s != null)) r.start();
+  });
+  return r;
+}
+
+void handle(Client c, Map<String, dynamic> m) {
+  switch (m['t']) {
+    case 'quick':
+    case 'create':
+      {
+        if (c.room != null) c.room!.onLeave(c);
+        c.name = _name(m['name']);
+        c.av = _av(m['av']);
+        c.did = _did(m['did'], c.name);
+        if (!Admin.allow(c)) return;
+        const five = false;
+        final n = (m['n'] is int && m['n'] >= 2 && m['n'] <= 4) ? m['n'] as int : 4;
+        const target = 151;
+        final Room r;
+        if (m['t'] == 'quick') {
+          r = _findQuick(five, n) ?? _makeQuick(five, n, target);
+        } else {
+          r = Room(_newCode(), five, n, target);
+          rooms[r.code] = r;
+        }
+        r.add(c);
+        r.lobby();
+        Admin.joined(c, r);
+        if (r.quick && r.full) r.start();
+        break;
+      }
+    case 'join':
+      {
+        final r = rooms[_normCode(m['code'])];
+        if (r == null) return c.err('الغرفة غير موجودة');
+        if (c.room != null) c.room!.onLeave(c);
+        c.name = _name(m['name']);
+        c.av = _av(m['av']);
+        c.did = _did(m['did'], c.name);
+        if (!Admin.allow(c)) return;
+        if (r.started) {
+          // الغرفة تلعب الآن: يدخل مشاهد
+          r.addSpec(c);
+          return;
+        }
+        if (r.add(c) < 0) return c.err('الغرفة ممتلئة');
+        r.lobby();
+        Admin.joined(c, r);
+        if (r.quick && r.full) r.start();
+        break;
+      }
+    case 'rooms':
+      {
+        final list = <Map<String, dynamic>>[];
+        for (final r in rooms.values) {
+          if (!r.hasHumans) continue;
+          if (r.quick && !r.started) continue;
+          list.add({
+            'code': r.code,
+            'n': r.n,
+            'started': r.started,
+            'quick': r.quick,
+            'players': [
+              for (final s in r.seats)
+                if (s != null && !s.bot && s.client != null) s.name
+            ],
+            'bots': r.botSeats,
+            'specs': r.specs.length,
+          });
+        }
+        list.sort((a, b) => (b['started'] == true ? 1 : 0) - (a['started'] == true ? 1 : 0));
+        c.send({'t': 'rooms', 'list': list.take(30).toList()});
+        break;
+      }
+    case 'invite':
+      {
+        // أي لاعب جالس بغرفة (بالانتظار أو أثناء اللعب) يبلّغ اللاعبين — المهلة والإيقاف من لوحة الإدارة
+        final r = c.room;
+        if (r == null || c.seat < 0) return;
+        Admin.invite(c, r);
+        break;
+      }
+    case 'me':
+      {
+        final d = (m['did'] ?? '').toString();
+        if (!RegExp(r'^[A-Za-z0-9]{8,40}$').hasMatch(d)) return;
+        c.devId = d;
+        Admin.acct({'op': 'ensure', 'did': d, 'name': _name(m['name'])}).then((j) => _frSend(c, j));
+        break;
+      }
+    case 'gauth':
+      {
+        final tok = (m['tok'] ?? '').toString();
+        if (c.pid == 0 || c.devId.isEmpty || tok.length < 100 || tok.length > 4000) return;
+        Admin.acct({'op': 'gauth', 'id': c.pid, 'did': c.devId, 'tok': tok}).then((j) => _frSend(c, j));
+        break;
+      }
+    case 'fr':
+      _frOp(c, (m['op'] ?? '').toString(), (m['id'] as num?)?.toInt() ?? 0);
+      break;
+    case 'finvite':
+      {
+        final r = c.room;
+        final id = (m['id'] as num?)?.toInt() ?? 0;
+        if (r == null || c.seat < 0 || !c.friends.contains(id)) return;
+        final t = byPid[id];
+        if (t == null) {
+          c.send({'t': 'note', 'm': 'صديقك غير متصل الآن'});
+          return;
+        }
+        t.send({'t': 'finvite', 'from': c.name, 'room': r.code, 'live': r.started});
+        c.send({'t': 'note', 'm': 'تم إرسال الدعوة لصديقك ✅'});
+        break;
+      }
+    case 'chat':
+      c.room?.onChat(c, (m['m'] ?? '').toString());
+      break;
+    case 'vjoin':
+      c.room?.voiceJoin(c);
+      break;
+    case 'vleave':
+      c.room?.voiceLeave(c, c.seat);
+      break;
+    case 'rtc':
+      c.room?.voiceRelay(c, m);
+      break;
+    case 'wantplay':
+      c.room?.requestPlay(c);
+      break;
+    case 'vote':
+      c.room?.onVote(c, m['ok'] == true);
+      break;
+    case 'start':
+      {
+        final r = c.room;
+        if (r != null && c.seat == 0) r.start();
+        break;
+      }
+    case 'play':
+      c.room?.onPlay(c, (m['i'] as int?) ?? -1, (m['side'] ?? '').toString());
+      break;
+    case 'draw':
+      c.room?.onDraw(c);
+      break;
+    case 'pass':
+      c.room?.onPass(c);
+      break;
+    case 'next':
+      c.room?.onNext(c);
+      break;
+    case 'leave':
+      c.room?.onLeave(c);
+      break;
+  }
+}
+
+/// يحوّل الأرقام العربية/الفارسية (٠-٩ / ۰-۹) إلى 0-9 ويحذف أي رمز غير رقم.
+String _normCode(dynamic v) {
+  final b = StringBuffer();
+  for (final r in (v ?? '').toString().runes) {
+    if (r >= 0x30 && r <= 0x39) {
+      b.writeCharCode(r);
+    } else if (r >= 0x660 && r <= 0x669) {
+      b.writeCharCode(0x30 + r - 0x660);
+    } else if (r >= 0x6F0 && r <= 0x6F9) {
+      b.writeCharCode(0x30 + r - 0x6F0);
+    }
+  }
+  return b.toString();
+}
+
+/// صورة اللاعب: نص base64 فقط وبحجم معقول، وإلا تُتجاهل.
+String? _av(dynamic v) {
+  final s = (v ?? '').toString();
+  if (s.isEmpty || s.length > 60000) return null;
+  return RegExp(r'^[A-Za-z0-9+/=]+$').hasMatch(s) ? s : null;
+}
+
+void _dropPid(Client c) {
+  if (c.pid != 0 && identical(byPid[c.pid], c)) byPid.remove(c.pid);
+}
+
+/// يرسل للاعب قائمة أصدقائه (مع حالة كل صديق: متصل / بغرفة).
+Future<void> _frSend(Client c, Map<String, dynamic>? j) async {
+  if (j == null) {
+    c.send({'t': 'note', 'm': 'خدمة الأصدقاء غير متاحة حالياً'});
+    return;
+  }
+  if (j['ok'] != true) {
+    const msgs = {
+      'notfound': 'ما لقيت لاعب بهذا الرقم',
+      'already': 'هو صديقك بالفعل',
+      'full': 'قائمة الأصدقاء ممتلئة',
+      'none': 'ما يوجد طلب',
+      'badtoken': 'تعذّر التحقق من حساب جوجل، جرّب مرة ثانية',
+      'bad': 'رقم غير صحيح',
+    };
+    c.send({'t': 'note', 'm': msgs[(j['error'] ?? '').toString()] ?? 'تعذّر تنفيذ الطلب'});
+    return;
+  }
+  final me = Map<String, dynamic>.from(j['me'] as Map);
+  final old = c.pid;
+  c.pid = (me['id'] as num).toInt();
+  if (old != 0 && old != c.pid && identical(byPid[old], c)) byPid.remove(old);
+  byPid[c.pid] = c;
+  final first = old != c.pid;
+  List<Map<String, dynamic>> ls(String k) => [for (final x in (j[k] as List)) Map<String, dynamic>.from(x as Map)];
+  final fr = ls('friends');
+  c.friends = {for (final f in fr) (f['id'] as num).toInt()};
+  for (final f in fr) {
+    final fc = byPid[(f['id'] as num).toInt()];
+    f['online'] = fc != null;
+    f['room'] = fc?.room?.code;
+    f['live'] = fc?.room?.started ?? false;
+  }
+  c.send({'t': 'fr', 'me': me, 'friends': fr, 'inReq': ls('inReq'), 'outReq': ls('outReq'), 'g': j['g'] == true, 'email': (j['email'] ?? '').toString()});
+  if (j['mode'] != null) c.send({'t': 'gres', 'mode': j['mode']});
+  final n = (j['notify'] as num?)?.toInt() ?? 0;
+  if (n > 0) {
+    final tc = byPid[n];
+    if (tc != null) {
+      final who = (j['name'] ?? '').toString();
+      tc.send({'t': 'fnote', 'm': j['ev'] == 'acc' ? '$who قبل طلب صداقتك 🤝' : '$who أرسل لك طلب صداقة'});
+    }
+  }
+  if (first) c.room?.sendAvatars(); // حتى تظهر الـ ID داخل الغرفة
+}
+
+Future<void> _frOp(Client c, String op, int other) async {
+  if (c.pid == 0) {
+    c.send({'t': 'note', 'm': 'انتظر شوي حتى يتم تسجيلك'});
+    return;
+  }
+  const ok = {'list', 'req', 'accept', 'reject', 'remove'};
+  if (!ok.contains(op)) return;
+  await _frSend(c, await Admin.acct({'op': op, 'id': c.pid, 'other': other}));
+}
+
+String _name(dynamic v) {
+  final s = (v ?? '').toString().trim();
+  if (s.isEmpty) return 'لاعب';
+  return s.length > 14 ? s.substring(0, 14) : s;
+}
+
+String _did(dynamic v, String name) {
+  final s = (v ?? '').toString();
+  if (RegExp(r'^[A-Za-z0-9]{8,40}$').hasMatch(s)) return s;
+  return 'old-$name'; // نسخة قديمة بدون معرّف جهاز
+}
+
+/// الربط مع لوحة الإدارة (Cloudflare Worker). يشتغل فقط إذا ضبطت ADMIN_URL و ADMIN_KEY في Render.
+/// أي فشل بالاتصال ما يأثر على اللعب أبداً.
+class Admin {
+  static final String url = (Platform.environment['ADMIN_URL'] ?? '').trim().replaceAll(RegExp(r'/+$'), '');
+  static final String key = (Platform.environment['ADMIN_KEY'] ?? '').trim();
+  static bool get on => url.isNotEmpty && key.isNotEmpty;
+
+  static bool maint = false;
+  static String maintMsg = 'اللعبة تحت الصيانة حالياً، ارجع بعد شوي';
+  static String welcome = '';
+  static String invOk = 'تم إبلاغ اللاعبين ✅ انتظرهم بالغرفة';
+  static Set<String> bans = {};
+  static final HttpClient _http = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+
+  static Future<Map<String, dynamic>?> _post(String path, Map<String, dynamic> body) async {
+    if (!on) return null;
+    try {
+      final rq = await _http.postUrl(Uri.parse('$url$path'));
+      rq.headers.contentType = ContentType.json;
+      rq.write(jsonEncode({'key': key, ...body}));
+      final rs = await rq.close().timeout(const Duration(seconds: 12));
+      final txt = await rs.transform(utf8.decoder).join();
+      if (rs.statusCode != 200) return null;
+      return Map<String, dynamic>.from(jsonDecode(txt) as Map);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<Map<String, dynamic>?> acct(Map<String, dynamic> body) => _post('/api/domino/acct', body);
+
+  /// يسمح للاعب بالدخول؟ (صيانة / حظر)
+  static bool allow(Client c) {
+    if (bans.contains(c.did)) {
+      c.err('تم حظرك من اللعب أونلاين');
+      c.ws.close();
+      return false;
+    }
+    if (maint) {
+      c.err(maintMsg);
+      c.ws.close();
+      return false;
+    }
+    return true;
+  }
+
+  static void joined(Client c, Room r) {
+    if (welcome.isNotEmpty) c.send({'t': 'note', 'm': welcome});
+    _post('/api/domino/ev', {
+      'events': [
+        {'k': 'join', 'did': c.did, 'name': c.name, 'room': r.code, 'online': clients.length}
+      ]
+    });
+  }
+
+  static Future<void> invite(Client c, Room r) async {
+    if (!on) {
+      c.send({'t': 'note', 'm': 'الإبلاغ غير متاح حالياً'});
+      return;
+    }
+    final j = await _post('/api/domino/invite', {'did': c.did, 'name': c.name, 'room': r.code, 'live': r.started});
+    if (j == null) {
+      c.send({'t': 'note', 'm': 'تعذر إبلاغ اللاعبين، جرّب بعد شوي'});
+    } else if (j['ok'] == true) {
+      c.send({'t': 'note', 'm': invOk});
+    } else if (j['error'] == 'wait') {
+      c.send({'t': 'note', 'm': 'انتظر ${j['wait']} ثانية قبل ما تبلّغ مرة ثانية'});
+    } else if (j['error'] == 'off') {
+      c.send({'t': 'note', 'm': 'الإدارة أوقفت خاصية الإبلاغ'});
+    } else {
+      c.send({'t': 'note', 'm': 'تعذر إبلاغ اللاعبين'});
+    }
+  }
+
+  static List<Map<String, String>> _humans(Room r) => [
+        for (final s in r.seats)
+          if (s != null && !s.bot && s.client != null) {'did': s.client!.did, 'name': s.name}
+      ];
+
+  static void started(Room r) {
+    _post('/api/domino/ev', {
+      'events': [
+        {'k': 'start', 'room': r.code, 'players': _humans(r)}
+      ]
+    });
+  }
+
+  static void ended(Room r, DominoGame g) {
+    final win = <Map<String, String>>[];
+    for (var i = 0; i < r.seats.length; i++) {
+      final s = r.seats[i];
+      if (s != null && !s.bot && s.client != null && g.sameTeam(i, g.matchWinner)) win.add({'did': s.client!.did, 'name': s.name});
+    }
+    _post('/api/domino/ev', {
+      'events': [
+        {'k': 'end', 'room': r.code, 'players': _humans(r), 'win': win}
+      ]
+    });
+  }
+
+  /// كل 30 ثانية: يرسل لقطة حيّة ويستلم الإعدادات (صيانة، حظر، رسالة ترحيب)
+  static Future<void> tick() async {
+    final snap = {
+      'online': clients.length,
+      'rooms': [
+        for (final r in rooms.values.take(40))
+          {
+            'code': r.code,
+            'n': r.n,
+            'started': r.started,
+            'quick': r.quick,
+            'names': [for (final s in r.seats) if (s != null && !s.bot) s.name],
+            'bots': r.seats.where((s) => s != null && s.bot).length,
+          }
+      ],
+    };
+    final j = await _post('/api/domino/live', {'snap': snap});
+    final cfg = j == null ? null : j['cfg'];
+    if (cfg is! Map) return;
+    maint = cfg['maint'] == true;
+    maintMsg = (cfg['maintMsg'] ?? maintMsg).toString();
+    welcome = (cfg['welcome'] ?? '').toString();
+    final ok = (cfg['invOk'] ?? '').toString().trim();
+    if (ok.isNotEmpty) invOk = ok;
+    bans = {for (final x in (cfg['bans'] as List? ?? const [])) x.toString()};
+    for (final c in clients.toList()) {
+      if (bans.contains(c.did)) {
+        c.err('تم حظرك من اللعب أونلاين');
+        c.ws.close();
+      }
+    }
+  }
+
+  static void start() {
+    if (!on) {
+      print('Admin link OFF (ADMIN_URL / ADMIN_KEY not set)');
+      return;
+    }
+    print('Admin link ON -> $url');
+    tick();
+    Timer.periodic(const Duration(seconds: 30), (_) => tick());
+  }
+}
+
+Future<void> main() async {
+  final port = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+  print('Domino server listening on :$port');
+  Admin.start();
+  await for (final req in server) {
+    if (WebSocketTransformer.isUpgradeRequest(req)) {
+      try {
+        final ws = await WebSocketTransformer.upgrade(req);
+        ws.pingInterval = const Duration(seconds: 20);
+        final c = Client(ws);
+        clients.add(c);
+        ws.listen((data) {
+          try {
+            handle(c, Map<String, dynamic>.from(jsonDecode(data as String) as Map));
+          } catch (e) {
+            c.err('رسالة غير صالحة');
+          }
+        }, onDone: () {
+          clients.remove(c);
+          _dropPid(c);
+          c.room?.onLeave(c);
+        }, onError: (_) {
+          clients.remove(c);
+          _dropPid(c);
+          c.room?.onLeave(c);
+        });
+      } catch (_) {}
+    } else {
+      req.response
+        ..statusCode = 200
+        ..write('Domino server OK — rooms: ${rooms.length}');
+      await req.response.close();
+    }
+  }
+}
